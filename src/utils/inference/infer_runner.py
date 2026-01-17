@@ -132,47 +132,113 @@ class InferRunner(object):
         all_sequence_variants = []  
         sequence_variants = None
         num_cand = None
-        for inv_sample in inv_samples:
-            smp = inv_sample[0]
 
-            pred_seqs, scores, _, _, _ = inference(
-                model=self.model.invfold_module,
-                sample_input=smp,
-                design_modality=self.configs.design_modality,
-                topk=self.configs.invfold_topk,
-                temp=self.configs.invfold_temp,
-                use_beam=self.configs.invfold_use_beam,
-                device=self.device,
-            )
+        # for struct_samples in inv_samples:          
+        #     for smp in struct_samples:
+        #         pred_seqs, scores, _, _, _ = inference(
+        #             model=self.model.invfold_module,
+        #             sample_input=smp,
+        #             design_modality=self.configs.design_modality,
+        #             topk=self.configs.invfold_topk,
+        #             temp=self.configs.invfold_temp,
+        #             use_beam=self.configs.invfold_use_beam,
+        #             device=self.device,
+        #         )
 
-            if not pred_seqs:
-                all_sequence_variants.append([])
-                continue
+        #         if not pred_seqs:
+        #             all_sequence_variants.append([])
+        #             continue
 
-            res_ids = smp["res_ids"]           # (L_design,)
-            chain_ids = smp["chain_ids"]       # (L_design,)
-            res_atom_indices = smp["res_atom_indices"] 
-            ch = str(chain_ids[0])            
+        #         res_ids = smp["res_ids"]           # (L_design,)
+        #         chain_ids = smp["chain_ids"]       # (L_design,)
+        #         res_atom_indices = smp["res_atom_indices"] 
+        #         ch = str(chain_ids[0])            
 
-            num_cand = len(pred_seqs)
-            sequence_variants = [
-                {"per_chain": {}, "scores": {}} for _ in range(num_cand)
-            ]
+        #         num_cand = len(pred_seqs)
+        #         sequence_variants = [
+        #             {"per_chain": {}, "scores": {}} for _ in range(num_cand)
+        #         ]
 
-            for cand_idx in range(num_cand):
-                seq_c = pred_seqs[cand_idx]    
+        #         for cand_idx in range(num_cand):
+        #             seq_c = pred_seqs[cand_idx]    
 
-                sequence_variants[cand_idx]["per_chain"][ch] = {
-                    "res_ids": res_ids,
-                    "atom_indices": res_atom_indices,
-                    "new_seq": seq_c,
-                }
-                sequence_variants[cand_idx]["scores"][ch] = scores[cand_idx]
+        #             sequence_variants[cand_idx]["per_chain"][ch] = {
+        #                 "res_ids": res_ids,
+        #                 "atom_indices": res_atom_indices,
+        #                 "new_seq": seq_c,
+        #             }
+        #             sequence_variants[cand_idx]["scores"][ch] = scores[cand_idx]
 
-            all_sequence_variants.append(sequence_variants)
+        #         all_sequence_variants.append(sequence_variants)
+
+        # return pred_backbone_output, all_sequence_variants
+
+        for struct_samples in inv_samples:  # 每个 struct（对应 pred_coordinates[idx]）
+            merged_variants = None
+
+            for smp in struct_samples:  # 每条链一个 smp（全链输入，design_mask 标记离散设计位点）
+                dm = np.asarray(smp.get("design_mask", None), dtype=bool).reshape(-1)
+                if dm.size == 0:
+                    continue
+
+                design_pos = np.nonzero(dm)[0]  # 设计 residue 的序号（可不连续）
+                if design_pos.size == 0:
+                    # 这条链没有要设计的 residue，不需要 inference，也不需要 patch
+                    continue
+
+                pred_seqs, scores, _, _, _ = inference(
+                    model=self.model.invfold_module,
+                    sample_input=smp,
+                    design_modality=self.configs.design_modality,
+                    topk=self.configs.invfold_topk,
+                    temp=self.configs.invfold_temp,
+                    use_beam=self.configs.invfold_use_beam,
+                    device=self.device,
+                )
+                if not pred_seqs:
+                    continue
+
+                ch = str(np.asarray(smp["chain_ids"])[0])
+                atom_indices_full = smp["res_atom_indices"]   # 全链 residue -> atom idx list
+                atom_indices_patch = [atom_indices_full[i] for i in design_pos.tolist()]
+
+                L_full = dm.shape[0]
+                n_design = design_pos.size
+
+                # 初始化该 struct 的候选列表（topk）
+                if merged_variants is None:
+                    merged_variants = [{"per_chain": {}, "scores": {}} for _ in range(len(pred_seqs))]
+                else:
+                    if len(pred_seqs) != len(merged_variants):
+                        raise ValueError(f"topk mismatch across chains: {len(pred_seqs)} vs {len(merged_variants)}")
+
+                for k, seq_out in enumerate(pred_seqs):
+                    # 兼容 inference 两种输出：
+                    # 1) 全长序列（len == L_full）
+                    # 2) 仅设计位点序列（len == n_design）
+                    if len(seq_out) == L_full:
+                        seq_patch = "".join(seq_out[i] for i in design_pos.tolist())
+                    elif len(seq_out) == n_design:
+                        seq_patch = seq_out
+                    else:
+                        raise ValueError(
+                            f"Unexpected seq length from inference: len(seq_out)={len(seq_out)}, "
+                            f"L_full={L_full}, n_design={n_design}, chain={ch}"
+                        )
+
+                    merged_variants[k]["per_chain"][ch] = {
+                        "atom_indices": atom_indices_patch,  # 只给 design 位点
+                        "new_seq": seq_patch,                # 只给 design 位点
+                    }
+                    merged_variants[k]["scores"][ch] = float(scores[k]) if hasattr(scores[k], "item") else scores[k]
+
+            # 保证 all_sequence_variants 外层长度与 n_struct 对齐
+            all_sequence_variants.append(merged_variants if merged_variants is not None else [None])
 
         return pred_backbone_output, all_sequence_variants
-    
+
+
+
     def run(self) -> None:
         num_data = len(self.infer_dl.dataset)
         for seed in self.configs.seeds:

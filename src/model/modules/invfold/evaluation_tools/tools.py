@@ -419,7 +419,6 @@ def parse_invfold(
     design_modality: str,           # 'protein' / 'rna' / 'dna' / 'ligand'
     sample_name: str,
 ) -> List[List[Dict[str, Any]]]:
-
     prefer = design_modality.strip().lower()
     assert prefer in ("protein", "rna", "dna", "ligand")
 
@@ -454,16 +453,13 @@ def parse_invfold(
             elem_atom = np.array([name[0] for name in atom_names], dtype=str)
 
     if n_atom != len(atom_array):
-        raise ValueError(
-            f"coordinate.shape[1]={n_atom} does not match {len(atom_array)} "
-        )
+        raise ValueError(f"coordinate.shape[1]={n_atom} does not match {len(atom_array)}")
 
-    # 
+    # residue -> atom indices
     residue_atoms: dict[tuple[str, int], list[int]] = defaultdict(list)
     for idx, (ch, rid) in enumerate(zip(chain_ids_atom, res_ids_atom)):
         residue_atoms[(ch, int(rid))].append(idx)
 
-    # 
     sorted_keys = sorted(residue_atoms.keys(), key=lambda x: (x[0], x[1]))
     chains: "OrderedDict[str, list[tuple[str, int]]]" = OrderedDict()
     for ch, rid in sorted_keys:
@@ -471,7 +467,6 @@ def parse_invfold(
 
     samples_all: List[List[Dict[str, Any]]] = []
 
-    # invfold 
     for struct_idx in range(n_struct):
         coord_tensor = coord_tensor_all[struct_idx]   # [N_atom, 3]
         coords_np = _to_numpy_coords(coord_tensor)
@@ -484,22 +479,16 @@ def parse_invfold(
             return np.full((3,), np.nan, dtype=np.float32)
 
         def get_na_base_n_coord(atom_idx_list: list[int]) -> np.ndarray:
-
             for idx in atom_idx_list:
                 if atom_names[idx].upper() == "N9":
                     return coords_np[idx]
-
             for idx in atom_idx_list:
                 if atom_names[idx].upper() == "N1":
                     return coords_np[idx]
-
             for idx in atom_idx_list:
                 if atom_names[idx].upper().startswith("N"):
                     return coords_np[idx]
-
             return np.full((3,), np.nan, dtype=np.float32)
-
-
 
         struct_samples: List[Dict[str, Any]] = []
 
@@ -513,13 +502,14 @@ def parse_invfold(
                     if not is_het_res:
                         continue
 
+                    # ligand: 这里仍保持“全 conditioned 的 ligand residue 不参与设计并跳过”的旧逻辑
                     res_cond = cond_mask_atom[atom_idx_list]
                     if np.all(res_cond):
                         continue
 
                     elems = [elem_atom[i].upper() for i in atom_idx_list]
                     norm_elems = [e if e else "UNK" for e in elems]
-                    lig_xyz = coords_np[atom_idx_list]  # (N_lig_atom, 3)
+                    lig_xyz = coords_np[atom_idx_list]
                     if lig_xyz.shape[0] == 0:
                         continue
 
@@ -533,27 +523,24 @@ def parse_invfold(
                     sample = {
                         "title": f"{sample_name}_s{struct_idx}_LIG_chain{ch_id}_res{int(rid)}",
                         "type": "ligand",
-                        "seq": lig_seq_str,   
+                        "seq": lig_seq_str,
                         "ligand": {
                             "elements": norm_elems,
                             "coords": lig_xyz.tolist(),
                             "chain_mask": [[1.0] * L],
                             "chain_encoding": [[1.0] * L],
                         },
-                        # res_ids / chain_ids / res_atom_indices
                         "res_ids": res_ids,
                         "chain_ids": chain_ids,
                         "res_atom_indices": res_atom_indices,
                         "design_mask": np.ones(L, dtype=bool),
-                        "chain_id": str(ch_id),
-                        "res_id": int(rid),
-                        "ligand_seq": lig_seq_str,
                     }
                     struct_samples.append(sample)
 
             samples_all.append(struct_samples)
-            continue  
+            continue
 
+        # ---------- protein / rna / dna ----------
         for ch, res_keys in chains.items():
             seq_chars: list[str] = []
             design_mask: list[bool] = []
@@ -562,14 +549,12 @@ def parse_invfold(
 
             if prefer == "protein":
                 N_list, CA_list, C_list, O_list = [], [], [], []
-                res_atom_indices_list: list[list[int]] = []   
+                res_atom_indices_list: list[list[int]] = []
 
                 for (ch_id, rid) in res_keys:
                     atom_idx_list = residue_atoms[(ch_id, rid)]
-
-                    res_cond = cond_mask_atom[atom_idx_list] 
-                    if np.all(res_cond):
-                        continue  
+                    res_cond = cond_mask_atom[atom_idx_list]
+                    designable = (not np.all(res_cond))  # 关键：不再 continue；而是标记
 
                     name3 = res3[atom_idx_list[0]].upper()
                     aa = AA3_TO_1.get(name3, "X")
@@ -580,32 +565,26 @@ def parse_invfold(
                     C_list.append(get_coord_for_atom(atom_idx_list, "C"))
                     O_list.append(get_coord_for_atom(atom_idx_list, "O"))
 
-                    design_mask.append(True)  
+                    design_mask.append(bool(designable))
                     res_id_list.append(int(rid))
                     chain_id_list.append(str(ch_id))
-                    res_atom_indices_list.append(atom_idx_list)  
+                    res_atom_indices_list.append(atom_idx_list)
 
                 L = len(seq_chars)
                 if L == 0:
                     continue
 
-                seq_clean = "".join(seq_chars)
-                N_arr  = np.stack(N_list,  axis=0).astype(np.float32)
-                CA_arr = np.stack(CA_list, axis=0).astype(np.float32)
-                C_arr  = np.stack(C_list,  axis=0).astype(np.float32)
-                O_arr  = np.stack(O_list,  axis=0).astype(np.float32)
-
                 sample = {
                     "title": f"{sample_name}_s{struct_idx}_chain{ch}",
                     "type":  "protein",
-                    "seq":   seq_clean,
-                    "N":     N_arr,
-                    "CA":    CA_arr,
-                    "C":     C_arr,
-                    "O":     O_arr,
+                    "seq":   "".join(seq_chars),
+                    "N":     np.stack(N_list,  axis=0).astype(np.float32),
+                    "CA":    np.stack(CA_list, axis=0).astype(np.float32),
+                    "C":     np.stack(C_list,  axis=0).astype(np.float32),
+                    "O":     np.stack(O_list,  axis=0).astype(np.float32),
                     "chain_mask":     np.ones(L, dtype=np.float32),
                     "chain_encoding": np.ones(L, dtype=np.float32),
-                    "design_mask":    np.asarray(design_mask, dtype=bool),
+                    "design_mask":    np.asarray(design_mask, dtype=bool),   # residue-level 1D bool
                     "res_ids":        np.asarray(res_id_list, dtype=int),
                     "chain_ids":      np.asarray(chain_id_list),
                     "res_atom_indices": [np.asarray(idxs, dtype=int) for idxs in res_atom_indices_list],
@@ -613,19 +592,16 @@ def parse_invfold(
                 struct_samples.append(sample)
 
             else:
-                P_list, O5_list, C5_list, C4_list, C3_list, O3_list, N_list_na = \
-                    [], [], [], [], [], [], []
-                res_atom_indices_list: list[list[int]] = []   
+                P_list, O5_list, C5_list, C4_list, C3_list, O3_list, N_list_na = [], [], [], [], [], [], []
+                res_atom_indices_list: list[list[int]] = []
 
                 for (ch_id, rid) in res_keys:
                     atom_idx_list = residue_atoms[(ch_id, rid)]
-
                     res_cond = cond_mask_atom[atom_idx_list]
-                    if np.all(res_cond):
-                        continue  
+                    designable = (not np.all(res_cond))  # 关键：不再 continue；而是标记
 
                     name3 = res3[atom_idx_list[0]].upper()
-                    base = NA3_TO_1.get(name3, "N")  # A/T/G/C/U/N
+                    base = NA3_TO_1.get(name3, "N")
 
                     if prefer == "dna":
                         ch1 = base.upper()
@@ -633,7 +609,7 @@ def parse_invfold(
                             ch1 = "T"
                         if ch1 not in ("A", "T", "G", "C", "N"):
                             ch1 = "N"
-                    else:  # rna
+                    else:
                         ch1 = base.upper()
                         if ch1 == "T":
                             ch1 = "U"
@@ -642,47 +618,38 @@ def parse_invfold(
 
                     seq_chars.append(ch1)
 
-                    P_list.append(  get_coord_for_atom(atom_idx_list, "P")   )
-                    O5_list.append( get_coord_for_atom(atom_idx_list, "O5'") )
-                    C5_list.append( get_coord_for_atom(atom_idx_list, "C5'") )
-                    C4_list.append( get_coord_for_atom(atom_idx_list, "C4'") )
-                    C3_list.append( get_coord_for_atom(atom_idx_list, "C3'") )
-                    O3_list.append( get_coord_for_atom(atom_idx_list, "O3'") )
-                    N_list_na.append( get_na_base_n_coord(atom_idx_list) )
+                    P_list.append(get_coord_for_atom(atom_idx_list, "P"))
+                    O5_list.append(get_coord_for_atom(atom_idx_list, "O5'"))
+                    C5_list.append(get_coord_for_atom(atom_idx_list, "C5'"))
+                    C4_list.append(get_coord_for_atom(atom_idx_list, "C4'"))
+                    C3_list.append(get_coord_for_atom(atom_idx_list, "C3'"))
+                    O3_list.append(get_coord_for_atom(atom_idx_list, "O3'"))
+                    N_list_na.append(get_na_base_n_coord(atom_idx_list))
 
-                    design_mask.append(True)
+                    design_mask.append(bool(designable))
                     res_id_list.append(int(rid))
                     chain_id_list.append(str(ch_id))
                     res_atom_indices_list.append(atom_idx_list)
 
                 L = len(seq_chars)
                 if L == 0:
-                    continue  
-
-                seq_clean = "".join(seq_chars)
-                P_arr  = np.stack(P_list,  axis=0).astype(np.float32)
-                O5_arr = np.stack(O5_list, axis=0).astype(np.float32)
-                C5_arr = np.stack(C5_list, axis=0).astype(np.float32)
-                C4_arr = np.stack(C4_list, axis=0).astype(np.float32)
-                C3_arr = np.stack(C3_list, axis=0).astype(np.float32)
-                O3_arr = np.stack(O3_list, axis=0).astype(np.float32)
-                N_arr  = np.stack(N_list_na, axis=0).astype(np.float32)
+                    continue
 
                 kind = "dna" if prefer == "dna" else "rna"
                 sample = {
                     "title": f"{sample_name}_s{struct_idx}_{kind}_chain{ch}",
                     "type":  kind,
-                    "seq":   seq_clean,
-                    "P":     P_arr,
-                    "O5":    O5_arr,
-                    "C5":    C5_arr,
-                    "C4":    C4_arr,
-                    "C3":    C3_arr,
-                    "O3":    O3_arr,
-                    "N":     N_arr,
+                    "seq":   "".join(seq_chars),
+                    "P":     np.stack(P_list,  axis=0).astype(np.float32),
+                    "O5":    np.stack(O5_list, axis=0).astype(np.float32),
+                    "C5":    np.stack(C5_list, axis=0).astype(np.float32),
+                    "C4":    np.stack(C4_list, axis=0).astype(np.float32),
+                    "C3":    np.stack(C3_list, axis=0).astype(np.float32),
+                    "O3":    np.stack(O3_list, axis=0).astype(np.float32),
+                    "N":     np.stack(N_list_na, axis=0).astype(np.float32),
                     "chain_mask":     np.ones(L, dtype=np.float32),
                     "chain_encoding": np.ones(L, dtype=np.float32),
-                    "design_mask":    np.asarray(design_mask, dtype=bool),
+                    "design_mask":    np.asarray(design_mask, dtype=bool),   # residue-level 1D bool
                     "res_ids":        np.asarray(res_id_list, dtype=int),
                     "chain_ids":      np.asarray(chain_id_list),
                     "res_atom_indices": [np.asarray(idxs, dtype=int) for idxs in res_atom_indices_list],
@@ -692,6 +659,300 @@ def parse_invfold(
         samples_all.append(struct_samples)
 
     return samples_all
+
+    
+# def parse_invfold(
+#     atom_array: AtomArray,
+#     pred_output,
+#     design_modality: str,           # 'protein' / 'rna' / 'dna' / 'ligand'
+#     sample_name: str,
+# ) -> List[List[Dict[str, Any]]]:
+
+#     prefer = design_modality.strip().lower()
+#     assert prefer in ("protein", "rna", "dna", "ligand")
+
+#     coord_tensor_all = pred_output.coordinate
+#     assert coord_tensor_all.ndim == 3, f"expect coordinate [N_struct, N_atom, 3], got {coord_tensor_all.shape}"
+#     n_struct, n_atom = coord_tensor_all.shape[0], coord_tensor_all.shape[1]
+
+#     atom_names = np.asarray(atom_array.atom_name).astype(str)
+#     chain_ids_atom = np.asarray(atom_array.chain_id).astype(str)
+#     res_ids_atom = np.asarray(atom_array.res_id)
+
+#     if hasattr(atom_array, "cano_seq_resname"):
+#         res3 = np.asarray(atom_array.cano_seq_resname).astype(str)
+#     else:
+#         res3 = np.asarray(atom_array.res_name).astype(str)
+
+#     if hasattr(atom_array, "condition_token_mask"):
+#         cond_mask_atom = np.asarray(atom_array.condition_token_mask).astype(bool)
+#     else:
+#         cond_mask_atom = np.zeros(n_atom, dtype=bool)
+
+#     hetero_atom = None
+#     elem_atom = None
+#     if prefer == "ligand":
+#         if hasattr(atom_array, "hetero"):
+#             hetero_atom = np.asarray(atom_array.hetero).astype(bool)
+#         else:
+#             hetero_atom = np.ones(n_atom, dtype=bool)
+#         if hasattr(atom_array, "element"):
+#             elem_atom = np.asarray(atom_array.element).astype(str)
+#         else:
+#             elem_atom = np.array([name[0] for name in atom_names], dtype=str)
+
+#     if n_atom != len(atom_array):
+#         raise ValueError(
+#             f"coordinate.shape[1]={n_atom} does not match {len(atom_array)} "
+#         )
+
+#     # 
+#     residue_atoms: dict[tuple[str, int], list[int]] = defaultdict(list)
+#     for idx, (ch, rid) in enumerate(zip(chain_ids_atom, res_ids_atom)):
+#         residue_atoms[(ch, int(rid))].append(idx)
+
+#     # 
+#     sorted_keys = sorted(residue_atoms.keys(), key=lambda x: (x[0], x[1]))
+#     chains: "OrderedDict[str, list[tuple[str, int]]]" = OrderedDict()
+#     for ch, rid in sorted_keys:
+#         chains.setdefault(ch, []).append((ch, rid))
+
+#     samples_all: List[List[Dict[str, Any]]] = []
+
+#     # invfold 
+#     for struct_idx in range(n_struct):
+#         coord_tensor = coord_tensor_all[struct_idx]   # [N_atom, 3]
+#         coords_np = _to_numpy_coords(coord_tensor)
+
+#         def get_coord_for_atom(atom_idx_list: list[int], target_name: str) -> np.ndarray:
+#             t = target_name.upper()
+#             for idx in atom_idx_list:
+#                 if atom_names[idx].upper() == t:
+#                     return coords_np[idx]
+#             return np.full((3,), np.nan, dtype=np.float32)
+
+#         def get_na_base_n_coord(atom_idx_list: list[int]) -> np.ndarray:
+
+#             for idx in atom_idx_list:
+#                 if atom_names[idx].upper() == "N9":
+#                     return coords_np[idx]
+
+#             for idx in atom_idx_list:
+#                 if atom_names[idx].upper() == "N1":
+#                     return coords_np[idx]
+
+#             for idx in atom_idx_list:
+#                 if atom_names[idx].upper().startswith("N"):
+#                     return coords_np[idx]
+
+#             return np.full((3,), np.nan, dtype=np.float32)
+
+
+
+#         struct_samples: List[Dict[str, Any]] = []
+
+#         # ---------- ligand-only ----------
+#         if prefer == "ligand":
+#             for ch, res_keys in chains.items():
+#                 for (ch_id, rid) in res_keys:
+#                     atom_idx_list = residue_atoms[(ch_id, rid)]
+
+#                     is_het_res = np.all(hetero_atom[atom_idx_list])
+#                     if not is_het_res:
+#                         continue
+
+#                     res_cond = cond_mask_atom[atom_idx_list]
+#                     if np.all(res_cond):
+#                         continue
+
+#                     elems = [elem_atom[i].upper() for i in atom_idx_list]
+#                     norm_elems = [e if e else "UNK" for e in elems]
+#                     lig_xyz = coords_np[atom_idx_list]  # (N_lig_atom, 3)
+#                     if lig_xyz.shape[0] == 0:
+#                         continue
+
+#                     L = lig_xyz.shape[0]
+#                     lig_seq_str = " ".join(norm_elems)
+
+#                     res_ids = np.arange(L, dtype=int)
+#                     chain_ids = np.array([str(ch_id)] * L, dtype=str)
+#                     res_atom_indices = [np.asarray([atom_idx_list[i]], dtype=int) for i in range(L)]
+
+#                     sample = {
+#                         "title": f"{sample_name}_s{struct_idx}_LIG_chain{ch_id}_res{int(rid)}",
+#                         "type": "ligand",
+#                         "seq": lig_seq_str,   
+#                         "ligand": {
+#                             "elements": norm_elems,
+#                             "coords": lig_xyz.tolist(),
+#                             "chain_mask": [[1.0] * L],
+#                             "chain_encoding": [[1.0] * L],
+#                         },
+#                         # res_ids / chain_ids / res_atom_indices
+#                         "res_ids": res_ids,
+#                         "chain_ids": chain_ids,
+#                         "res_atom_indices": res_atom_indices,
+#                         "design_mask": np.ones(L, dtype=bool),
+#                         "chain_id": str(ch_id),
+#                         "res_id": int(rid),
+#                         "ligand_seq": lig_seq_str,
+#                     }
+#                     struct_samples.append(sample)
+
+#             samples_all.append(struct_samples)
+#             continue  
+
+#         for ch, res_keys in chains.items():
+
+
+#             print("chain", ch, "num_res", len(res_keys))
+#             kept = 0
+#             skipped = 0
+#             for (ch_id, rid) in res_keys:
+#                 atom_idx_list = residue_atoms[(ch_id, rid)]
+#                 if np.all(cond_mask_atom[atom_idx_list]):
+#                     skipped += 1
+#                 else:
+#                     kept += 1
+#             print("chain", ch, "kept_res", kept, "skipped_res", skipped)
+
+#             seq_chars: list[str] = []
+#             design_mask: list[bool] = []
+#             res_id_list: list[int] = []
+#             chain_id_list: list[str] = []
+
+#             if prefer == "protein":
+#                 N_list, CA_list, C_list, O_list = [], [], [], []
+#                 res_atom_indices_list: list[list[int]] = []   
+
+#                 for (ch_id, rid) in res_keys:
+#                     atom_idx_list = residue_atoms[(ch_id, rid)]
+
+#                     res_cond = cond_mask_atom[atom_idx_list] 
+#                     if np.all(res_cond):
+#                         continue  
+
+#                     name3 = res3[atom_idx_list[0]].upper()
+#                     aa = AA3_TO_1.get(name3, "X")
+#                     seq_chars.append(aa)
+
+#                     N_list.append(get_coord_for_atom(atom_idx_list, "N"))
+#                     CA_list.append(get_coord_for_atom(atom_idx_list, "CA"))
+#                     C_list.append(get_coord_for_atom(atom_idx_list, "C"))
+#                     O_list.append(get_coord_for_atom(atom_idx_list, "O"))
+
+#                     design_mask.append(True)  
+#                     res_id_list.append(int(rid))
+#                     chain_id_list.append(str(ch_id))
+#                     res_atom_indices_list.append(atom_idx_list)  
+
+#                 L = len(seq_chars)
+#                 if L == 0:
+#                     continue
+
+#                 seq_clean = "".join(seq_chars)
+#                 N_arr  = np.stack(N_list,  axis=0).astype(np.float32)
+#                 CA_arr = np.stack(CA_list, axis=0).astype(np.float32)
+#                 C_arr  = np.stack(C_list,  axis=0).astype(np.float32)
+#                 O_arr  = np.stack(O_list,  axis=0).astype(np.float32)
+
+#                 sample = {
+#                     "title": f"{sample_name}_s{struct_idx}_chain{ch}",
+#                     "type":  "protein",
+#                     "seq":   seq_clean,
+#                     "N":     N_arr,
+#                     "CA":    CA_arr,
+#                     "C":     C_arr,
+#                     "O":     O_arr,
+#                     "chain_mask":     np.ones(L, dtype=np.float32),
+#                     "chain_encoding": np.ones(L, dtype=np.float32),
+#                     "design_mask":    np.asarray(design_mask, dtype=bool),
+#                     "res_ids":        np.asarray(res_id_list, dtype=int),
+#                     "chain_ids":      np.asarray(chain_id_list),
+#                     "res_atom_indices": [np.asarray(idxs, dtype=int) for idxs in res_atom_indices_list],
+#                 }
+#                 struct_samples.append(sample)
+
+#             else:
+#                 P_list, O5_list, C5_list, C4_list, C3_list, O3_list, N_list_na = \
+#                     [], [], [], [], [], [], []
+#                 res_atom_indices_list: list[list[int]] = []   
+
+#                 for (ch_id, rid) in res_keys:
+#                     atom_idx_list = residue_atoms[(ch_id, rid)]
+
+#                     res_cond = cond_mask_atom[atom_idx_list]
+#                     if np.all(res_cond):
+#                         continue  
+
+#                     name3 = res3[atom_idx_list[0]].upper()
+#                     base = NA3_TO_1.get(name3, "N")  # A/T/G/C/U/N
+
+#                     if prefer == "dna":
+#                         ch1 = base.upper()
+#                         if ch1 == "U":
+#                             ch1 = "T"
+#                         if ch1 not in ("A", "T", "G", "C", "N"):
+#                             ch1 = "N"
+#                     else:  # rna
+#                         ch1 = base.upper()
+#                         if ch1 == "T":
+#                             ch1 = "U"
+#                         if ch1 not in ("A", "U", "G", "C", "N"):
+#                             ch1 = "N"
+
+#                     seq_chars.append(ch1)
+
+#                     P_list.append(  get_coord_for_atom(atom_idx_list, "P")   )
+#                     O5_list.append( get_coord_for_atom(atom_idx_list, "O5'") )
+#                     C5_list.append( get_coord_for_atom(atom_idx_list, "C5'") )
+#                     C4_list.append( get_coord_for_atom(atom_idx_list, "C4'") )
+#                     C3_list.append( get_coord_for_atom(atom_idx_list, "C3'") )
+#                     O3_list.append( get_coord_for_atom(atom_idx_list, "O3'") )
+#                     N_list_na.append( get_na_base_n_coord(atom_idx_list) )
+
+#                     design_mask.append(True)
+#                     res_id_list.append(int(rid))
+#                     chain_id_list.append(str(ch_id))
+#                     res_atom_indices_list.append(atom_idx_list)
+
+#                 L = len(seq_chars)
+#                 if L == 0:
+#                     continue  
+
+#                 seq_clean = "".join(seq_chars)
+#                 P_arr  = np.stack(P_list,  axis=0).astype(np.float32)
+#                 O5_arr = np.stack(O5_list, axis=0).astype(np.float32)
+#                 C5_arr = np.stack(C5_list, axis=0).astype(np.float32)
+#                 C4_arr = np.stack(C4_list, axis=0).astype(np.float32)
+#                 C3_arr = np.stack(C3_list, axis=0).astype(np.float32)
+#                 O3_arr = np.stack(O3_list, axis=0).astype(np.float32)
+#                 N_arr  = np.stack(N_list_na, axis=0).astype(np.float32)
+
+#                 kind = "dna" if prefer == "dna" else "rna"
+#                 sample = {
+#                     "title": f"{sample_name}_s{struct_idx}_{kind}_chain{ch}",
+#                     "type":  kind,
+#                     "seq":   seq_clean,
+#                     "P":     P_arr,
+#                     "O5":    O5_arr,
+#                     "C5":    C5_arr,
+#                     "C4":    C4_arr,
+#                     "C3":    C3_arr,
+#                     "O3":    O3_arr,
+#                     "N":     N_arr,
+#                     "chain_mask":     np.ones(L, dtype=np.float32),
+#                     "chain_encoding": np.ones(L, dtype=np.float32),
+#                     "design_mask":    np.asarray(design_mask, dtype=bool),
+#                     "res_ids":        np.asarray(res_id_list, dtype=int),
+#                     "chain_ids":      np.asarray(chain_id_list),
+#                     "res_atom_indices": [np.asarray(idxs, dtype=int) for idxs in res_atom_indices_list],
+#                 }
+#                 struct_samples.append(sample)
+
+#         samples_all.append(struct_samples)
+
+#     return samples_all
 
 
 

@@ -134,8 +134,11 @@ def build_chain_atom_array(chain_sequence: str, chain_type: str, im: str, chain_
     if im == "antibody" or ref_atom_array is None:
         chain_array = None
         res_id = 1
-        assert chain_sequence.count('-') == len(chain_length.split(',')), "Length of antibody chain does not match"
-        length = chain_length.split(',')
+        if chain_length is None or len(chain_length) == 0:
+            assert chain_sequence.count('-') == 0, "No length provided for antibody design"
+        else:
+            assert (chain_sequence.count('-') == len(chain_length.split(','))), "Length of antibody chain does not match"
+        length = chain_length.split(',') if chain_length is not None else []
         idx = 0
         for aa in chain_sequence:
             # Is Framework

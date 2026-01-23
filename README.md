@@ -67,6 +67,17 @@ Create a JSON file to define your design task.
 * **`length`:**
     * *(Antibody only)* Specifies the target length range for each masked CDR.
     * The order corresponds to the hyphens in the `sequence` string (e.g., `6-7,6-7,9-15` corresponds to the first, second, and third `-`).
+    * if you want to keep the whole sequence, set the length to "" or just delete the key.
+
+### Helper Script: identify_cdr.py
+To simplify the preparation of the input JSON, we provide a helper script `scripts/identify_cdr.py`. This script processes a PDB or CIF file to automatically identify antibody chains, mask CDR regions, and generate a compatible JSON file.
+
+**Usage:**
+```bash
+python ./scripts/identify_cdr.py <input_pdb_or_cif> --output <output_json> --chothia --odesign
+```
+
+This tool uses `abnumber` to identify CDRs (default scheme: IMGT) and formats the output according to the requirements described above.
 
 ## 4. Download Data Dependencies
 Before running the inference for the first time, you must download the required component files from Google Drive.

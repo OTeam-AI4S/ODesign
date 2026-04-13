@@ -6,13 +6,20 @@ from contextlib import nullcontext
 from os.path import join as opjoin
 from typing import Any, Mapping
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from ml_collections.config_dict import ConfigDict
 
 from src.utils.inference.dumper import DataDumper
 from src.model.odesign import ODesign
-from src.model.modules.invfold.evaluation_tools.tools import *
+from src.model.modules.invfold.evaluation_tools.tools import parse_invfold, inference, reload_model
+from src.model.modules.invfold.proteinmpnn.wrapper import build_default_wrapper
+from src.model.modules.invfold.proteinmpnn.inference import proteinmpnn_inference
+
+from src.model.modules.invfold.grnade.wrapper import build_default_grnade_wrapper
+from src.model.modules.invfold.grnade.inference import grnade_inference
+
 from src.utils.train.distributed import DIST_WRAPPER
 from src.utils.misc import seed_everything
 from src.utils.model.torch_utils import to_device
@@ -31,7 +38,6 @@ class InferRunner(object):
         model: ODesign,
         dumper: DataDumper,
     ) -> None:
-        
         self.configs = configs
         self.dump_dir = dump_dir
         self.error_dir = error_dir
@@ -64,9 +70,38 @@ class InferRunner(object):
             strict=self.configs.load_strict,
         )
         self.model.eval()
-        self.print(f"Finish loading checkpoint.")
+        self.print("Finish loading checkpoint.")
 
     def load_invfold_module(self) -> None:
+        modality = str(self.configs.design_modality).strip().lower()
+
+        if modality == "protein":
+            checkpoint_path = f"{os.getenv('CKPT_ROOT_DIR')}/v_48_020.pt"
+            if not os.path.exists(checkpoint_path):
+                raise Exception(f"Given ProteinMPNN checkpoint path not exist [{checkpoint_path}]")
+            self.print(f"Loading ProteinMPNN inverse folding module from {checkpoint_path}")
+            # self.model.invfold_module = build_default_wrapper(
+            #     ckpt_path=checkpoint_path,
+            #     device=self.device,
+            # )
+            self.model.invfold_module = build_default_wrapper(
+                protein_ckpt_path=f"{os.getenv('CKPT_ROOT_DIR')}/v_48_020.pt",
+                ligand_ckpt_path=f"{os.getenv('CKPT_ROOT_DIR')}/ligandmpnn_v_32_010_25.pt",
+                device=self.device,
+                ligand_mpnn_cutoff_for_score=8.0,
+                ligand_mpnn_use_atom_context=True,
+                ligand_mpnn_use_side_chain_context=False,
+            )
+            self.print("Finish loading ProteinMPNN inverse folding module.")
+            return
+
+        if modality == "rna":
+            self.model.invfold_module = build_default_grnade_wrapper(
+                ckpt_path=f"{os.getenv('CKPT_ROOT_DIR')}/grnade.h5",
+                device=self.device,
+            )
+            self.print("Finish loading RNA inverse folding module.")
+            return
         checkpoint_path = f"{os.getenv('CKPT_ROOT_DIR')}/oinvfold_{self.configs.design_modality}.ckpt"
         if not os.path.exists(checkpoint_path):
             raise Exception(f"Given checkpoint path not exist [{checkpoint_path}]")
@@ -80,7 +115,7 @@ class InferRunner(object):
         )
 
         self.model.invfold_module = oinvfold
-        self.print(f"Finish loading inverse folding module.")
+        self.print("Finish loading inverse folding module.")
 
     def print(self, msg: str):
         if DIST_WRAPPER.rank == 0:
@@ -94,7 +129,7 @@ class InferRunner(object):
             self.configs.model.skip_amp.sample_diffusion = False
         else:
             self.configs.model.skip_amp.sample_diffusion = True
-        
+
         self.model.configs = self.configs
 
     @torch.no_grad()
@@ -127,33 +162,55 @@ class InferRunner(object):
             atom_array=data["atom_array"],
             pred_output=pred_backbone_output,
             design_modality=self.configs.design_modality,
-            sample_name=data["sample_name"],             
-        )        
-        all_sequence_variants = []  
-        sequence_variants = None
-        num_cand = None
+            sample_name=data["sample_name"],
+        )
+        all_sequence_variants = []
 
-        for struct_samples in inv_samples: 
+        modality = str(self.configs.design_modality).strip().lower()
+
+        for struct_samples in inv_samples:
             merged_variants = None
 
-            for smp in struct_samples:  
+            for smp in struct_samples:
                 dm = np.asarray(smp.get("design_mask", None), dtype=bool).reshape(-1)
                 if dm.size == 0:
                     continue
 
-                design_pos = np.nonzero(dm)[0]  
+                design_pos = np.nonzero(dm)[0]
                 if design_pos.size == 0:
                     continue
 
-                pred_seqs, scores, _, _, _ = inference(
-                    model=self.model.invfold_module,
-                    sample_input=smp,
-                    design_modality=self.configs.design_modality,
-                    topk=self.configs.invfold_topk,
-                    temp=self.configs.invfold_temp,
-                    use_beam=self.configs.invfold_use_beam,
-                    device=self.device,
-                )
+                if modality == "protein":
+                    pred_seqs, scores, _, _, _ = proteinmpnn_inference(
+                        model=self.model.invfold_module,
+                        sample_input=smp,
+                        design_modality=self.configs.design_modality,
+                        topk=self.configs.invfold_topk,
+                        temp=self.configs.invfold_temp,
+                        use_beam=self.configs.invfold_use_beam,
+                        device=self.device,
+                    )
+                elif modality == "rna":
+                    pred_seqs, scores, _, _, _ = grnade_inference(
+                        model=self.model.invfold_module,
+                        sample_input=smp,
+                        design_modality=self.configs.design_modality,
+                        topk=self.configs.invfold_topk,
+                        temp=self.configs.invfold_temp,
+                        use_beam=self.configs.invfold_use_beam,
+                        device=self.device,
+                    )
+                else:
+                    pred_seqs, scores, _, _, _ = inference(
+                        model=self.model.invfold_module,
+                        sample_input=smp,
+                        design_modality=self.configs.design_modality,
+                        topk=self.configs.invfold_topk,
+                        temp=self.configs.invfold_temp,
+                        use_beam=self.configs.invfold_use_beam,
+                        device=self.device,
+                    )
+
                 if not pred_seqs:
                     continue
 
@@ -171,7 +228,6 @@ class InferRunner(object):
                         raise ValueError(f"topk mismatch across chains: {len(pred_seqs)} vs {len(merged_variants)}")
 
                 for k, seq_out in enumerate(pred_seqs):
-
                     if isinstance(seq_out, str):
                         tokens = seq_out.split() if " " in seq_out else list(seq_out)
                     else:
@@ -187,7 +243,7 @@ class InferRunner(object):
                             f"L_full={L_full}, n_design={n_design}, chain={ch}"
                         )
 
-                    if self.configs.design_modality.strip().lower() == "ligand" or smp.get("type") == "ligand": # Use space to process ligand sequences
+                    if self.configs.design_modality.strip().lower() == "ligand" or smp.get("type") == "ligand":
                         seq_patch = " ".join(patch_tokens)
                     else:
                         seq_patch = "".join(patch_tokens)
@@ -201,8 +257,6 @@ class InferRunner(object):
             all_sequence_variants.append(merged_variants if merged_variants is not None else [None])
 
         return pred_backbone_output, all_sequence_variants
-
-
 
     def run(self) -> None:
         num_data = len(self.infer_dl.dataset)
@@ -255,5 +309,3 @@ class InferRunner(object):
                         f.write(error_message)
                     if hasattr(torch.cuda, "empty_cache"):
                         torch.cuda.empty_cache()
-
-                        

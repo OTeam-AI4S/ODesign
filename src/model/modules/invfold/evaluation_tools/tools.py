@@ -413,6 +413,7 @@ def decode_ligand_ids(ids, tok, sep: str = " ") -> str:
     return sep.join(out)
 
 
+
 def parse_invfold(
     atom_array: AtomArray,
     pred_output,
@@ -440,17 +441,15 @@ def parse_invfold(
     else:
         cond_mask_atom = np.zeros(n_atom, dtype=bool)
 
-    hetero_atom = None
-    elem_atom = None
-    if prefer == "ligand":
-        if hasattr(atom_array, "hetero"):
-            hetero_atom = np.asarray(atom_array.hetero).astype(bool)
-        else:
-            hetero_atom = np.ones(n_atom, dtype=bool)
-        if hasattr(atom_array, "element"):
-            elem_atom = np.asarray(atom_array.element).astype(str)
-        else:
-            elem_atom = np.array([name[0] for name in atom_names], dtype=str)
+    if hasattr(atom_array, "hetero"):
+        hetero_atom = np.asarray(atom_array.hetero).astype(bool)
+    else:
+        hetero_atom = np.zeros(n_atom, dtype=bool)
+
+    if hasattr(atom_array, "element"):
+        elem_atom = np.asarray(atom_array.element).astype(str)
+    else:
+        elem_atom = np.array([name[:1] if len(name) > 0 else "X" for name in atom_names], dtype=str)
 
     if n_atom != len(atom_array):
         raise ValueError(f"coordinate.shape[1]={n_atom} does not match {len(atom_array)}")
@@ -464,6 +463,30 @@ def parse_invfold(
     chains: "OrderedDict[str, list[tuple[str, int]]]" = OrderedDict()
     for ch, rid in sorted_keys:
         chains.setdefault(ch, []).append((ch, rid))
+
+    # element -> int mapping compatible with LigandMPNN data_utils
+    try:
+        from src.model.modules.invfold.proteinmpnn.data_utils import element_list as _MPNN_ELEMENT_LIST
+        _ELEMENT_TO_INT = {str(e).upper(): i + 1 for i, e in enumerate(_MPNN_ELEMENT_LIST)}
+    except Exception:
+        _COMMON_ELEMENTS = [
+            "H", "C", "N", "O", "F", "P", "S", "CL", "BR", "I",
+            "NA", "K", "MG", "CA", "MN", "FE", "CO", "NI", "CU", "ZN",
+            "SE", "B", "SI",
+        ]
+        _ELEMENT_TO_INT = {e: i + 1 for i, e in enumerate(_COMMON_ELEMENTS)}
+
+    def _normalize_element_symbol(e: str) -> str:
+        e = str(e).strip().upper()
+        if len(e) == 0:
+            return "X"
+        # common cases already look like C, N, O, ZN, CL ...
+        return e
+
+    def _is_protein_like_residue(atom_idx_list: list[int]) -> bool:
+        names = {atom_names[i].upper() for i in atom_idx_list}
+        # protein-like if it has the peptide backbone N-CA-C
+        return ("N" in names) and ("CA" in names) and ("C" in names)
 
     samples_all: List[List[Dict[str, Any]]] = []
 
@@ -502,7 +525,7 @@ def parse_invfold(
                     if not is_het_res:
                         continue
 
-                    # ligand: 这里仍保持“全 conditioned 的 ligand residue 不参与设计并跳过”的旧逻辑
+                    # ligand: 保持旧逻辑，全 conditioned 的 ligand residue 不参与设计
                     res_cond = cond_mask_atom[atom_idx_list]
                     if np.all(res_cond):
                         continue
@@ -540,6 +563,121 @@ def parse_invfold(
             samples_all.append(struct_samples)
             continue
 
+        # ---------- build whole-structure MPNN context for protein design ----------
+        mpnn_input_dict = None
+        global_index_of_residue: dict[tuple[str, int], int] = {}
+        has_ligand_context = False
+        mpnn_model_type = "protein_mpnn"
+
+        if prefer == "protein":
+            global_seq_chars: list[str] = []
+            global_R_idx: list[int] = []
+            global_chain_letters: list[str] = []
+            global_chain_labels: list[int] = []
+            global_N_list, global_CA_list, global_C_list, global_O_list = [], [], [], []
+
+            protein_atom_mask = np.zeros(n_atom, dtype=bool)
+
+            protein_chain_order: list[str] = []
+            for ch, res_keys in chains.items():
+                chain_has_protein = False
+                for (ch_id, rid) in res_keys:
+                    atom_idx_list = residue_atoms[(ch_id, rid)]
+                    if _is_protein_like_residue(atom_idx_list):
+                        chain_has_protein = True
+                        break
+                if chain_has_protein:
+                    protein_chain_order.append(str(ch))
+
+            chain_to_label = {ch: i for i, ch in enumerate(protein_chain_order)}
+
+            for ch, res_keys in chains.items():
+                for (ch_id, rid) in res_keys:
+                    atom_idx_list = residue_atoms[(ch_id, rid)]
+                    if not _is_protein_like_residue(atom_idx_list):
+                        continue
+
+                    name3 = res3[atom_idx_list[0]].upper()
+                    aa = AA3_TO_1.get(name3, "X")
+
+                    global_index_of_residue[(str(ch_id), int(rid))] = len(global_seq_chars)
+                    global_seq_chars.append(aa)
+                    global_R_idx.append(int(rid))
+                    global_chain_letters.append(str(ch_id))
+                    global_chain_labels.append(int(chain_to_label[str(ch_id)]))
+
+                    N_xyz = get_coord_for_atom(atom_idx_list, "N")
+                    CA_xyz = get_coord_for_atom(atom_idx_list, "CA")
+                    C_xyz = get_coord_for_atom(atom_idx_list, "C")
+                    O_xyz = get_coord_for_atom(atom_idx_list, "O")
+
+                    global_N_list.append(N_xyz)
+                    global_CA_list.append(CA_xyz)
+                    global_C_list.append(C_xyz)
+                    global_O_list.append(O_xyz)
+
+                    protein_atom_mask[np.asarray(atom_idx_list, dtype=int)] = True
+
+            if len(global_seq_chars) > 0:
+                X_all = np.stack(
+                    [
+                        np.stack(global_N_list, axis=0),
+                        np.stack(global_CA_list, axis=0),
+                        np.stack(global_C_list, axis=0),
+                        np.stack(global_O_list, axis=0),
+                    ],
+                    axis=1,
+                ).astype(np.float32)   # [L_all, 4, 3]
+
+                mask_all = np.isfinite(X_all).all(axis=(1, 2)).astype(np.int32)
+
+                aa_to_id = {
+                    "A": 0, "C": 1, "D": 2, "E": 3, "F": 4,
+                    "G": 5, "H": 6, "I": 7, "K": 8, "L": 9,
+                    "M": 10, "N": 11, "P": 12, "Q": 13, "R": 14,
+                    "S": 15, "T": 16, "V": 17, "W": 18, "Y": 19,
+                    "X": 20,
+                }
+                S_all = np.asarray([aa_to_id.get(a, 20) for a in global_seq_chars], dtype=np.int32)
+                R_idx_all = np.asarray(global_R_idx, dtype=np.int32)
+                chain_labels_all = np.asarray(global_chain_labels, dtype=np.int32)
+                chain_letters_all = np.asarray(global_chain_letters, dtype=str)
+
+                water_names = {"HOH", "WAT", "H2O", "DOD"}
+                non_water_mask = ~np.isin(np.char.upper(res3.astype(str)), list(water_names))
+                context_atom_mask = (~protein_atom_mask) & non_water_mask
+
+                Y = coords_np[context_atom_mask].astype(np.float32)
+                Y_elem = np.asarray([_normalize_element_symbol(e) for e in elem_atom[context_atom_mask]], dtype=str)
+                Y_t = np.asarray([_ELEMENT_TO_INT.get(e, 0) for e in Y_elem], dtype=np.int32)
+                Y_m = ((Y_t != 1) & (Y_t != 0)).astype(np.int32)  # remove H and unknown
+
+                if Y.shape[0] > 0:
+                    keep = Y_m.astype(bool)
+                    Y = Y[keep]
+                    Y_t = Y_t[keep]
+                    Y_m = Y_m[keep]
+
+                if Y.shape[0] == 0:
+                    Y = np.zeros((1, 3), dtype=np.float32)
+                    Y_t = np.zeros((1,), dtype=np.int32)
+                    Y_m = np.zeros((1,), dtype=np.int32)
+
+                has_ligand_context = bool(np.sum(Y_m) > 0)
+                mpnn_model_type = "ligand_mpnn" if has_ligand_context else "protein_mpnn"
+
+                mpnn_input_dict = {
+                    "X": X_all,                              # [L_all, 4, 3]
+                    "mask": mask_all,                        # [L_all]
+                    "R_idx": R_idx_all,                      # [L_all]
+                    "chain_labels": chain_labels_all,        # [L_all]
+                    "chain_letters": chain_letters_all,      # [L_all]
+                    "S": S_all,                              # [L_all]
+                    "Y": Y,                                  # [N_ctx, 3]
+                    "Y_t": Y_t,                              # [N_ctx]
+                    "Y_m": Y_m,                              # [N_ctx]
+                }
+
         # ---------- protein / rna / dna ----------
         for ch, res_keys in chains.items():
             seq_chars: list[str] = []
@@ -548,13 +686,23 @@ def parse_invfold(
             chain_id_list: list[str] = []
 
             if prefer == "protein":
-                N_list, CA_list, C_list, O_list = [], [], [], []
-                res_atom_indices_list: list[list[int]] = []
-
+                # 只对 protein-like residues 建样本；ligand / ion / NA chain 会被跳过
+                local_entries: list[tuple[str, int, list[int]]] = []
                 for (ch_id, rid) in res_keys:
                     atom_idx_list = residue_atoms[(ch_id, rid)]
+                    if _is_protein_like_residue(atom_idx_list):
+                        local_entries.append((str(ch_id), int(rid), atom_idx_list))
+
+                if len(local_entries) == 0:
+                    continue
+
+                N_list, CA_list, C_list, O_list = [], [], [], []
+                res_atom_indices_list: list[list[int]] = []
+                target_global_indices: list[int] = []
+
+                for (ch_id, rid, atom_idx_list) in local_entries:
                     res_cond = cond_mask_atom[atom_idx_list]
-                    designable = (not np.all(res_cond))  # 关键：不再 continue；而是标记
+                    designable = (not np.all(res_cond))
 
                     name3 = res3[atom_idx_list[0]].upper()
                     aa = AA3_TO_1.get(name3, "X")
@@ -569,6 +717,7 @@ def parse_invfold(
                     res_id_list.append(int(rid))
                     chain_id_list.append(str(ch_id))
                     res_atom_indices_list.append(atom_idx_list)
+                    target_global_indices.append(global_index_of_residue[(str(ch_id), int(rid))])
 
                 L = len(seq_chars)
                 if L == 0:
@@ -576,18 +725,28 @@ def parse_invfold(
 
                 sample = {
                     "title": f"{sample_name}_s{struct_idx}_chain{ch}",
-                    "type":  "protein",
-                    "seq":   "".join(seq_chars),
-                    "N":     np.stack(N_list,  axis=0).astype(np.float32),
-                    "CA":    np.stack(CA_list, axis=0).astype(np.float32),
-                    "C":     np.stack(C_list,  axis=0).astype(np.float32),
-                    "O":     np.stack(O_list,  axis=0).astype(np.float32),
-                    "chain_mask":     np.ones(L, dtype=np.float32),
+                    "type": "protein",
+                    "seq": "".join(seq_chars),
+
+                    # local target-chain backbone
+                    "N": np.stack(N_list, axis=0).astype(np.float32),
+                    "CA": np.stack(CA_list, axis=0).astype(np.float32),
+                    "C": np.stack(C_list, axis=0).astype(np.float32),
+                    "O": np.stack(O_list, axis=0).astype(np.float32),
+
+                    # keep old fields for downstream merge/writeback
+                    "chain_mask": np.ones(L, dtype=np.float32),
                     "chain_encoding": np.ones(L, dtype=np.float32),
-                    "design_mask":    np.asarray(design_mask, dtype=bool),   # residue-level 1D bool
-                    "res_ids":        np.asarray(res_id_list, dtype=int),
-                    "chain_ids":      np.asarray(chain_id_list),
+                    "design_mask": np.asarray(design_mask, dtype=bool),
+                    "res_ids": np.asarray(res_id_list, dtype=int),
+                    "chain_ids": np.asarray(chain_id_list),
                     "res_atom_indices": [np.asarray(idxs, dtype=int) for idxs in res_atom_indices_list],
+
+                    # new fields for MPNN family routing / whole-structure context
+                    "target_global_indices": np.asarray(target_global_indices, dtype=np.int64),
+                    "has_ligand_context": bool(has_ligand_context),
+                    "mpnn_model_type": mpnn_model_type,
+                    "mpnn_input_dict": mpnn_input_dict,
                 }
                 struct_samples.append(sample)
 
@@ -598,7 +757,7 @@ def parse_invfold(
                 for (ch_id, rid) in res_keys:
                     atom_idx_list = residue_atoms[(ch_id, rid)]
                     res_cond = cond_mask_atom[atom_idx_list]
-                    designable = (not np.all(res_cond))  # 关键：不再 continue；而是标记
+                    designable = (not np.all(res_cond))
 
                     name3 = res3[atom_idx_list[0]].upper()
                     base = NA3_TO_1.get(name3, "N")
@@ -638,20 +797,20 @@ def parse_invfold(
                 kind = "dna" if prefer == "dna" else "rna"
                 sample = {
                     "title": f"{sample_name}_s{struct_idx}_{kind}_chain{ch}",
-                    "type":  kind,
-                    "seq":   "".join(seq_chars),
-                    "P":     np.stack(P_list,  axis=0).astype(np.float32),
-                    "O5":    np.stack(O5_list, axis=0).astype(np.float32),
-                    "C5":    np.stack(C5_list, axis=0).astype(np.float32),
-                    "C4":    np.stack(C4_list, axis=0).astype(np.float32),
-                    "C3":    np.stack(C3_list, axis=0).astype(np.float32),
-                    "O3":    np.stack(O3_list, axis=0).astype(np.float32),
-                    "N":     np.stack(N_list_na, axis=0).astype(np.float32),
-                    "chain_mask":     np.ones(L, dtype=np.float32),
+                    "type": kind,
+                    "seq": "".join(seq_chars),
+                    "P": np.stack(P_list, axis=0).astype(np.float32),
+                    "O5": np.stack(O5_list, axis=0).astype(np.float32),
+                    "C5": np.stack(C5_list, axis=0).astype(np.float32),
+                    "C4": np.stack(C4_list, axis=0).astype(np.float32),
+                    "C3": np.stack(C3_list, axis=0).astype(np.float32),
+                    "O3": np.stack(O3_list, axis=0).astype(np.float32),
+                    "N": np.stack(N_list_na, axis=0).astype(np.float32),
+                    "chain_mask": np.ones(L, dtype=np.float32),
                     "chain_encoding": np.ones(L, dtype=np.float32),
-                    "design_mask":    np.asarray(design_mask, dtype=bool),   # residue-level 1D bool
-                    "res_ids":        np.asarray(res_id_list, dtype=int),
-                    "chain_ids":      np.asarray(chain_id_list),
+                    "design_mask": np.asarray(design_mask, dtype=bool),
+                    "res_ids": np.asarray(res_id_list, dtype=int),
+                    "chain_ids": np.asarray(chain_id_list),
                     "res_atom_indices": [np.asarray(idxs, dtype=int) for idxs in res_atom_indices_list],
                 }
                 struct_samples.append(sample)
@@ -667,7 +826,6 @@ def parse_invfold(
 #     design_modality: str,           # 'protein' / 'rna' / 'dna' / 'ligand'
 #     sample_name: str,
 # ) -> List[List[Dict[str, Any]]]:
-
 #     prefer = design_modality.strip().lower()
 #     assert prefer in ("protein", "rna", "dna", "ligand")
 
@@ -702,16 +860,13 @@ def parse_invfold(
 #             elem_atom = np.array([name[0] for name in atom_names], dtype=str)
 
 #     if n_atom != len(atom_array):
-#         raise ValueError(
-#             f"coordinate.shape[1]={n_atom} does not match {len(atom_array)} "
-#         )
+#         raise ValueError(f"coordinate.shape[1]={n_atom} does not match {len(atom_array)}")
 
-#     # 
+#     # residue -> atom indices
 #     residue_atoms: dict[tuple[str, int], list[int]] = defaultdict(list)
 #     for idx, (ch, rid) in enumerate(zip(chain_ids_atom, res_ids_atom)):
 #         residue_atoms[(ch, int(rid))].append(idx)
 
-#     # 
 #     sorted_keys = sorted(residue_atoms.keys(), key=lambda x: (x[0], x[1]))
 #     chains: "OrderedDict[str, list[tuple[str, int]]]" = OrderedDict()
 #     for ch, rid in sorted_keys:
@@ -719,7 +874,6 @@ def parse_invfold(
 
 #     samples_all: List[List[Dict[str, Any]]] = []
 
-#     # invfold 
 #     for struct_idx in range(n_struct):
 #         coord_tensor = coord_tensor_all[struct_idx]   # [N_atom, 3]
 #         coords_np = _to_numpy_coords(coord_tensor)
@@ -732,22 +886,16 @@ def parse_invfold(
 #             return np.full((3,), np.nan, dtype=np.float32)
 
 #         def get_na_base_n_coord(atom_idx_list: list[int]) -> np.ndarray:
-
 #             for idx in atom_idx_list:
 #                 if atom_names[idx].upper() == "N9":
 #                     return coords_np[idx]
-
 #             for idx in atom_idx_list:
 #                 if atom_names[idx].upper() == "N1":
 #                     return coords_np[idx]
-
 #             for idx in atom_idx_list:
 #                 if atom_names[idx].upper().startswith("N"):
 #                     return coords_np[idx]
-
 #             return np.full((3,), np.nan, dtype=np.float32)
-
-
 
 #         struct_samples: List[Dict[str, Any]] = []
 
@@ -761,13 +909,14 @@ def parse_invfold(
 #                     if not is_het_res:
 #                         continue
 
+#                     # ligand: 这里仍保持“全 conditioned 的 ligand residue 不参与设计并跳过”的旧逻辑
 #                     res_cond = cond_mask_atom[atom_idx_list]
 #                     if np.all(res_cond):
 #                         continue
 
 #                     elems = [elem_atom[i].upper() for i in atom_idx_list]
 #                     norm_elems = [e if e else "UNK" for e in elems]
-#                     lig_xyz = coords_np[atom_idx_list]  # (N_lig_atom, 3)
+#                     lig_xyz = coords_np[atom_idx_list]
 #                     if lig_xyz.shape[0] == 0:
 #                         continue
 
@@ -781,41 +930,25 @@ def parse_invfold(
 #                     sample = {
 #                         "title": f"{sample_name}_s{struct_idx}_LIG_chain{ch_id}_res{int(rid)}",
 #                         "type": "ligand",
-#                         "seq": lig_seq_str,   
+#                         "seq": lig_seq_str,
 #                         "ligand": {
 #                             "elements": norm_elems,
 #                             "coords": lig_xyz.tolist(),
 #                             "chain_mask": [[1.0] * L],
 #                             "chain_encoding": [[1.0] * L],
 #                         },
-#                         # res_ids / chain_ids / res_atom_indices
 #                         "res_ids": res_ids,
 #                         "chain_ids": chain_ids,
 #                         "res_atom_indices": res_atom_indices,
 #                         "design_mask": np.ones(L, dtype=bool),
-#                         "chain_id": str(ch_id),
-#                         "res_id": int(rid),
-#                         "ligand_seq": lig_seq_str,
 #                     }
 #                     struct_samples.append(sample)
 
 #             samples_all.append(struct_samples)
-#             continue  
+#             continue
 
+#         # ---------- protein / rna / dna ----------
 #         for ch, res_keys in chains.items():
-
-
-#             print("chain", ch, "num_res", len(res_keys))
-#             kept = 0
-#             skipped = 0
-#             for (ch_id, rid) in res_keys:
-#                 atom_idx_list = residue_atoms[(ch_id, rid)]
-#                 if np.all(cond_mask_atom[atom_idx_list]):
-#                     skipped += 1
-#                 else:
-#                     kept += 1
-#             print("chain", ch, "kept_res", kept, "skipped_res", skipped)
-
 #             seq_chars: list[str] = []
 #             design_mask: list[bool] = []
 #             res_id_list: list[int] = []
@@ -823,14 +956,12 @@ def parse_invfold(
 
 #             if prefer == "protein":
 #                 N_list, CA_list, C_list, O_list = [], [], [], []
-#                 res_atom_indices_list: list[list[int]] = []   
+#                 res_atom_indices_list: list[list[int]] = []
 
 #                 for (ch_id, rid) in res_keys:
 #                     atom_idx_list = residue_atoms[(ch_id, rid)]
-
-#                     res_cond = cond_mask_atom[atom_idx_list] 
-#                     if np.all(res_cond):
-#                         continue  
+#                     res_cond = cond_mask_atom[atom_idx_list]
+#                     designable = (not np.all(res_cond))  # 关键：不再 continue；而是标记
 
 #                     name3 = res3[atom_idx_list[0]].upper()
 #                     aa = AA3_TO_1.get(name3, "X")
@@ -841,32 +972,26 @@ def parse_invfold(
 #                     C_list.append(get_coord_for_atom(atom_idx_list, "C"))
 #                     O_list.append(get_coord_for_atom(atom_idx_list, "O"))
 
-#                     design_mask.append(True)  
+#                     design_mask.append(bool(designable))
 #                     res_id_list.append(int(rid))
 #                     chain_id_list.append(str(ch_id))
-#                     res_atom_indices_list.append(atom_idx_list)  
+#                     res_atom_indices_list.append(atom_idx_list)
 
 #                 L = len(seq_chars)
 #                 if L == 0:
 #                     continue
 
-#                 seq_clean = "".join(seq_chars)
-#                 N_arr  = np.stack(N_list,  axis=0).astype(np.float32)
-#                 CA_arr = np.stack(CA_list, axis=0).astype(np.float32)
-#                 C_arr  = np.stack(C_list,  axis=0).astype(np.float32)
-#                 O_arr  = np.stack(O_list,  axis=0).astype(np.float32)
-
 #                 sample = {
 #                     "title": f"{sample_name}_s{struct_idx}_chain{ch}",
 #                     "type":  "protein",
-#                     "seq":   seq_clean,
-#                     "N":     N_arr,
-#                     "CA":    CA_arr,
-#                     "C":     C_arr,
-#                     "O":     O_arr,
+#                     "seq":   "".join(seq_chars),
+#                     "N":     np.stack(N_list,  axis=0).astype(np.float32),
+#                     "CA":    np.stack(CA_list, axis=0).astype(np.float32),
+#                     "C":     np.stack(C_list,  axis=0).astype(np.float32),
+#                     "O":     np.stack(O_list,  axis=0).astype(np.float32),
 #                     "chain_mask":     np.ones(L, dtype=np.float32),
 #                     "chain_encoding": np.ones(L, dtype=np.float32),
-#                     "design_mask":    np.asarray(design_mask, dtype=bool),
+#                     "design_mask":    np.asarray(design_mask, dtype=bool),   # residue-level 1D bool
 #                     "res_ids":        np.asarray(res_id_list, dtype=int),
 #                     "chain_ids":      np.asarray(chain_id_list),
 #                     "res_atom_indices": [np.asarray(idxs, dtype=int) for idxs in res_atom_indices_list],
@@ -874,19 +999,16 @@ def parse_invfold(
 #                 struct_samples.append(sample)
 
 #             else:
-#                 P_list, O5_list, C5_list, C4_list, C3_list, O3_list, N_list_na = \
-#                     [], [], [], [], [], [], []
-#                 res_atom_indices_list: list[list[int]] = []   
+#                 P_list, O5_list, C5_list, C4_list, C3_list, O3_list, N_list_na = [], [], [], [], [], [], []
+#                 res_atom_indices_list: list[list[int]] = []
 
 #                 for (ch_id, rid) in res_keys:
 #                     atom_idx_list = residue_atoms[(ch_id, rid)]
-
 #                     res_cond = cond_mask_atom[atom_idx_list]
-#                     if np.all(res_cond):
-#                         continue  
+#                     designable = (not np.all(res_cond))  # 关键：不再 continue；而是标记
 
 #                     name3 = res3[atom_idx_list[0]].upper()
-#                     base = NA3_TO_1.get(name3, "N")  # A/T/G/C/U/N
+#                     base = NA3_TO_1.get(name3, "N")
 
 #                     if prefer == "dna":
 #                         ch1 = base.upper()
@@ -894,7 +1016,7 @@ def parse_invfold(
 #                             ch1 = "T"
 #                         if ch1 not in ("A", "T", "G", "C", "N"):
 #                             ch1 = "N"
-#                     else:  # rna
+#                     else:
 #                         ch1 = base.upper()
 #                         if ch1 == "T":
 #                             ch1 = "U"
@@ -903,47 +1025,38 @@ def parse_invfold(
 
 #                     seq_chars.append(ch1)
 
-#                     P_list.append(  get_coord_for_atom(atom_idx_list, "P")   )
-#                     O5_list.append( get_coord_for_atom(atom_idx_list, "O5'") )
-#                     C5_list.append( get_coord_for_atom(atom_idx_list, "C5'") )
-#                     C4_list.append( get_coord_for_atom(atom_idx_list, "C4'") )
-#                     C3_list.append( get_coord_for_atom(atom_idx_list, "C3'") )
-#                     O3_list.append( get_coord_for_atom(atom_idx_list, "O3'") )
-#                     N_list_na.append( get_na_base_n_coord(atom_idx_list) )
+#                     P_list.append(get_coord_for_atom(atom_idx_list, "P"))
+#                     O5_list.append(get_coord_for_atom(atom_idx_list, "O5'"))
+#                     C5_list.append(get_coord_for_atom(atom_idx_list, "C5'"))
+#                     C4_list.append(get_coord_for_atom(atom_idx_list, "C4'"))
+#                     C3_list.append(get_coord_for_atom(atom_idx_list, "C3'"))
+#                     O3_list.append(get_coord_for_atom(atom_idx_list, "O3'"))
+#                     N_list_na.append(get_na_base_n_coord(atom_idx_list))
 
-#                     design_mask.append(True)
+#                     design_mask.append(bool(designable))
 #                     res_id_list.append(int(rid))
 #                     chain_id_list.append(str(ch_id))
 #                     res_atom_indices_list.append(atom_idx_list)
 
 #                 L = len(seq_chars)
 #                 if L == 0:
-#                     continue  
-
-#                 seq_clean = "".join(seq_chars)
-#                 P_arr  = np.stack(P_list,  axis=0).astype(np.float32)
-#                 O5_arr = np.stack(O5_list, axis=0).astype(np.float32)
-#                 C5_arr = np.stack(C5_list, axis=0).astype(np.float32)
-#                 C4_arr = np.stack(C4_list, axis=0).astype(np.float32)
-#                 C3_arr = np.stack(C3_list, axis=0).astype(np.float32)
-#                 O3_arr = np.stack(O3_list, axis=0).astype(np.float32)
-#                 N_arr  = np.stack(N_list_na, axis=0).astype(np.float32)
+#                     continue
 
 #                 kind = "dna" if prefer == "dna" else "rna"
 #                 sample = {
 #                     "title": f"{sample_name}_s{struct_idx}_{kind}_chain{ch}",
 #                     "type":  kind,
-#                     "seq":   seq_clean,
-#                     "P":     P_arr,
-#                     "O5":    O5_arr,
-#                     "C5":    C5_arr,
-#                     "C4":    C4_arr,
-#                     "C3":    C3_arr,
-#                     "O3":    O3_arr,
-#                     "N":     N_arr,
+#                     "seq":   "".join(seq_chars),
+#                     "P":     np.stack(P_list,  axis=0).astype(np.float32),
+#                     "O5":    np.stack(O5_list, axis=0).astype(np.float32),
+#                     "C5":    np.stack(C5_list, axis=0).astype(np.float32),
+#                     "C4":    np.stack(C4_list, axis=0).astype(np.float32),
+#                     "C3":    np.stack(C3_list, axis=0).astype(np.float32),
+#                     "O3":    np.stack(O3_list, axis=0).astype(np.float32),
+#                     "N":     np.stack(N_list_na, axis=0).astype(np.float32),
 #                     "chain_mask":     np.ones(L, dtype=np.float32),
 #                     "chain_encoding": np.ones(L, dtype=np.float32),
-#                     "design_mask":    np.asarray(design_mask, dtype=bool),
+#                     "design_mask":    np.asarray(design_mask, dtype=bool),   # residue-level 1D bool
 #                     "res_ids":        np.asarray(res_id_list, dtype=int),
 #                     "chain_ids":      np.asarray(chain_id_list),
 #                     "res_atom_indices": [np.asarray(idxs, dtype=int) for idxs in res_atom_indices_list],
@@ -953,6 +1066,8 @@ def parse_invfold(
 #         samples_all.append(struct_samples)
 
 #     return samples_all
+
+    
 
 
 

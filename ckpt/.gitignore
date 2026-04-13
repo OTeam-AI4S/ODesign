@@ -1,3 +1,4 @@
 *
 !.gitignore
 !get_odesign_ckpt.sh
+!grnade.h5

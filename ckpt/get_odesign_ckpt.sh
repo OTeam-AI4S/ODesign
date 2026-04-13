@@ -14,7 +14,7 @@
 #######################################################################
 
 # Set default argument
-DEFAULT_CKPT_ROOT_DIR="./ckpt"
+DEFAULT_CKPT_ROOT_DIR="."
 
 # Parse command line argument
 ckpt_root_dir="${1:-$DEFAULT_CKPT_ROOT_DIR}"
@@ -29,6 +29,8 @@ CKPTS=(
     "https://huggingface.co/The-Institute-for-AI-Molecular-Design/OInvFold/resolve/main/oinvfold_ligand.ckpt?download=true"
     "https://huggingface.co/The-Institute-for-AI-Molecular-Design/OInvFold/resolve/main/oinvfold_dna.ckpt?download=true"
     "https://huggingface.co/The-Institute-for-AI-Molecular-Design/OInvFold/resolve/main/oinvfold_rna.ckpt?download=true"
+    "https://github.com/dauparas/ProteinMPNN/blob/main/ca_model_weights/v_48_020.pt"
+
 )
 
 echo "-----------------------------------------------------------"

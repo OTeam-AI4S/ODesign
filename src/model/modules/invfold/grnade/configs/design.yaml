@@ -1,0 +1,127 @@
+# Configuration for gRNAde design pipeline (design.py)
+# This is a minimal example for generating RNA sequence designs
+
+##################################
+# Target Structure Configuration
+##################################
+
+# Path to target 3D structure (PDB format)
+# Example: ZMP Riboswitch (PDB: 4ZNP)
+pdb_filepath: "projects/openknot_benchmark/structures/13614271/RNASolo.pdb"
+
+# Target secondary structure in dot-bracket notation
+# Pseudoknots are supported using additional bracket types: [], {}, <>
+target_sec_struct: ".((((((((..(.[[[[[....((((....))))..)..))))))))........(((..]]]]]..)))..."
+
+# Native sequence (optional, used for 2D-only mode when 3D coords are unavailable)
+native_seq: "GGGAUACAGGACUGGCGGAUUAGUGGGAAACCACGUGGACUGUAUCCGAAAAAAAGCCGACCGCCUGGGCAUC"
+
+# Partial sequence constraints (hard constraints) - optional
+# Use '_' for designable positions and 'A', 'G', 'C', 'U' for fixed positions
+# Example: "GG__..." forces positions 1 and 2 to be Gs
+# Must match the length of the target sequence
+# Leave as null (or comment out) for fully unconstrained design
+# For soft constraints (probabilistic), see: projects/rna_polymerase_ribozyme/design_gRNAde.ipynb
+partial_seq: "GG_______________________________________________________________________"
+
+##################################
+# Design Mode Configuration
+##################################
+
+# Design mode: '3d' (condition on 3D structure) or '2d' (condition on 2D structure only)
+# - '3d': Uses 3D coordinates from PDB file, captures tertiary interactions
+# - '2d': Uses only secondary structure, 3D coordinates are masked
+mode: "3d"
+
+##################################
+# Sampling Configuration
+##################################
+
+# Total number of sequences to generate
+total_samples: 1000000
+
+# Number of sequences to sample per batch
+n_samples: 128
+
+# Number of designs that pass filtering threshold
+n_pass: 100000
+
+# Minimum sampling temperature (lower = more conservative, closer to mode)
+temperature_min: 0.1
+
+# Maximum sampling temperature (higher = more diverse, more exploration)
+temperature_max: 1.0
+
+# Filtering metric to use for initial design selection to reduce I/O
+# Options:
+#   - 'openknot_score': SHAPE-to-Secondary structure match (0-100, higher is better)
+#   - 'sc_score_ribonanzanet': SHAPE reactivity self-consistency (MAE, lower is better)
+#   - 'sc_score_ribonanzanet_ss': 2D structure self-consistency (MCC, higher is better)
+filter_metric: "openknot_score"
+
+# Threshold for filtering designs based on the selected metric
+# - For openknot_score: typically 70-90 (higher = stricter)
+# - For sc_score_ribonanzanet: typically 0.10-0.20 (lower = stricter)
+# - For sc_score_ribonanzanet_ss: typically 0.6-0.8 (higher = stricter)
+pass_threshold: 80
+
+##################################
+# Output Configuration
+##################################
+
+# Directory to save generated designs
+output_dir: "designs"
+
+##################################
+# Model Configuration
+##################################
+
+# Path to gRNAde checkpoint (relative to PROJECT_PATH)
+model_path: "checkpoints/gRNAde_drop3d@0.75_maxlen@500.h5"
+
+# Model architecture parameters (do not change unless using custom checkpoint)
+node_in_dim: [15, 4]
+node_h_dim: [128, 16]
+edge_in_dim: [132, 3]
+edge_h_dim: [64, 4]
+num_layers: 4
+drop_rate: 0.5
+out_dim: 4
+
+##################################
+# Featurizer Configuration
+##################################
+
+# Radius for spatial neighborhood graph (Angstrom)
+# Currently not used (set to 0.0), k-NN graph is used instead
+radius: 0.0
+
+# Number of k-nearest neighbors in 3D and sequence space
+top_k: 32
+
+# Number of radial basis functions for distance featurization
+num_rbf: 32
+
+# Number of positional encodings for sequence distance
+num_posenc: 32
+
+# Maximum number of conformations per structure (1 for single-state design)
+max_num_conformers: 1
+
+# Standard deviation of Gaussian noise added to coordinates during training
+# Not used during inference/design
+noise_scale: 0.1
+
+# Dropout probability for 3D coordinates during training
+# Not used during inference/design
+drop_prob_3d: 0.75
+
+##################################
+# System Configuration
+##################################
+
+# Random seed for reproducibility
+seed: 42
+
+# GPU device ID (0, 1, 2, etc.)
+gpu: 0

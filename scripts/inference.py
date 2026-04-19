@@ -32,10 +32,14 @@ def main(configs : DictConfig) -> None:
     print_configs(configs)
     os.environ["DATA_ROOT_DIR"] = configs.data_root_dir
     os.environ["CKPT_ROOT_DIR"] = configs.ckpt_root_dir
+    hydra_output_dir = HydraConfig.get().runtime.output_dir
     configs = ConfigDict(
         OmegaConf.to_container(configs.exp, resolve=True)
     )
-    dump_dir = HydraConfig.get().runtime.output_dir
+    # exp.dump_dir allows the caller to separate data output from hydra's
+    # working directory, which is needed when parallel seed workers each
+    # require a distinct hydra.run.dir but share one output directory.
+    dump_dir = configs.get("dump_dir", None) or hydra_output_dir
     configs.dump_dir = dump_dir
     error_dir = Path(dump_dir) / "errors"
     if DIST_WRAPPER.rank == 0:
@@ -45,7 +49,7 @@ def main(configs : DictConfig) -> None:
     logger.info(
         f"Distributed environment: world size: {DIST_WRAPPER.world_size}, "
         + f"global rank: {DIST_WRAPPER.rank}, local rank: {DIST_WRAPPER.local_rank}"
-    )    
+    )
     device = torch.device("cuda:{}".format(DIST_WRAPPER.local_rank))
     torch.cuda.set_device(device)
     if DIST_WRAPPER.world_size > 1:
@@ -72,7 +76,7 @@ def main(configs : DictConfig) -> None:
     )
 
     infer_runner.run()
-    
+
 
 if __name__ == "__main__":
     main()

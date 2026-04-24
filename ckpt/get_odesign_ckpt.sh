@@ -29,7 +29,7 @@ CKPTS=(
     "https://huggingface.co/The-Institute-for-AI-Molecular-Design/OInvFold/resolve/main/oinvfold_ligand.ckpt?download=true"
     "https://huggingface.co/The-Institute-for-AI-Molecular-Design/OInvFold/resolve/main/oinvfold_dna.ckpt?download=true"
     "https://huggingface.co/The-Institute-for-AI-Molecular-Design/OInvFold/resolve/main/oinvfold_rna.ckpt?download=true"
-    "https://github.com/dauparas/ProteinMPNN/blob/main/ca_model_weights/v_48_020.pt"
+    "https://github.com/dauparas/ProteinMPNN/raw/main/vanilla_model_weights/v_48_020.pt"
 
 )
 

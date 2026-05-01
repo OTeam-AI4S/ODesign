@@ -127,24 +127,24 @@ class DataDumper:
                         new_atom_array,
                         per_chain_edits=per_chain_edits,
                         design_modality=design_modality,
-                    )    
-
-                    output_fpath = os.path.join(
-                        prediction_save_dir,
-                        f"{sample_name}_seed_{seed}_bb_{rank}_seq_{seq_var_idx}.cif",
-                    )                    
-
-                    if b_factor is not None:
-                        # b_factor.shape == [N_sample, N_atom]
-                        new_atom_array.set_annotation("b_factor", np.round(b_factor[idx], 2))
-
-                    save_structure_cif(
-                        atom_array=new_atom_array,
-                        pred_coordinate=pred_coordinates[idx],
-                        output_fpath=output_fpath,
-                        entity_poly_type=entity_poly_type,
-                        pdb_id=sample_name,
                     )
+
+                output_fpath = os.path.join(
+                    prediction_save_dir,
+                    f"{sample_name}_seed_{seed}_bb_{rank}_seq_{seq_var_idx}.cif",
+                )
+
+                if b_factor is not None:
+                    # b_factor.shape == [N_sample, N_atom]
+                    new_atom_array.set_annotation("b_factor", np.round(b_factor[idx], 2))
+
+                save_structure_cif(
+                    atom_array=new_atom_array,
+                    pred_coordinate=pred_coordinates[idx],
+                    output_fpath=output_fpath,
+                    entity_poly_type=entity_poly_type,
+                    pdb_id=sample_name,
+                )
 
     def _apply_sequence_variant_to_atom_array(
         self,

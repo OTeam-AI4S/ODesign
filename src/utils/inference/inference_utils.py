@@ -1,4 +1,5 @@
 import random
+import re  # Windows-fork: needed by residue-range regex (Claude, 2026-04-28)
 from copy import deepcopy
 import numpy as np
 import logging
@@ -96,8 +97,11 @@ def sample_length(segments: str, length: int) -> list:
     for segment in segments:
         if '/' in segment:
             ref_c_id, ref_r_range = segment.split('/')
-            s, e = ref_r_range.split('-')
-            s, e = int(s), int(e)
+            # Windows-fork: handle negative residue numbers (Claude, 2026-04-28)
+            m = re.match(r'^(-?\d+)-(-?\d+)$', ref_r_range)
+            if m is None:
+                raise ValueError(f"Cannot parse residue range '{ref_r_range}'")
+            s, e = int(m.group(1)), int(m.group(2))
             seg_len = e - s + 1
             min_len.append(-1)
             max_len.append(-1)
@@ -173,8 +177,11 @@ def build_chain_atom_array(chain_sequence: str, chain_type: str, im: str, chain_
         segments = chain_sequence.split(',')
         for segment in segments:
             ref_c_id, ref_r_range = segment.split('/')
-            s, e = ref_r_range.split('-')
-            s, e = int(s), int(e)
+            # Windows-fork: handle negative residue numbers (Claude, 2026-04-28)
+            m = re.match(r'^(-?\d+)-(-?\d+)$', ref_r_range)
+            if m is None:
+                raise ValueError(f"Cannot parse residue range '{ref_r_range}'")
+            s, e = int(m.group(1)), int(m.group(2))
             chain_array += ref_atom_array[
                 (ref_atom_array.chain_id == ref_c_id) &
                 np.isin(ref_atom_array.res_id, range(s, e+1))

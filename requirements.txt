@@ -1,3 +1,39 @@
+# =============================================================================
+# Native Windows install (Windows-friendly fork, Claude, 2026-04-28)
+# =============================================================================
+# Verified working on: Python 3.10, CUDA 12.1, RTX 4070 (Windows 11)
+#
+# Changes from upstream `requirements.txt`:
+#   - triton==2.3.1     COMMENTED OUT: no Windows wheel; not imported by src/
+#   - pyg-lib           COMMENTED OUT: no Windows wheel; not imported by src/
+#   - biotite==1.0.1 -> biotite==1.2.0    (1.0.1 lacks biotite.interface.rdkit
+#                                          which inference_utils.py imports)
+#   - setuptools==75.8.2 -> setuptools==69.5.1
+#                       (PL 1.9.0 needs pkg_resources.declare_namespace,
+#                        deprecated/removed in setuptools 70+)
+#   - pyparsing==3.2.1 -> pyparsing==3.1.1
+#                       (prody requires <=3.1.1)
+#   - ADDED: prody==2.6.1     (imported by invfold/proteinmpnn/data_utils.py)
+#   - ADDED: addict==2.4.0    (imported by invfold/evaluation_tools/config_utils.py)
+#   - ADDED: cpdb-protein==1.1.0  (imported as `cpdb` by vendored gRNAde
+#                                  data_utils.py; required for RNA design)
+#   - ADDED: gdown==5.2.0     (used to fetch CCD data from Google Drive in
+#                              Phase E of the install)
+#
+# 12 nvidia-*-cu12 wheels are Linux-only and are silently excluded by pip
+# on Windows (PyTorch on Windows uses the system CUDA Toolkit instead).
+#
+# After running `pip install -r requirements.txt`, you also need to fetch the
+# LigandMPNN checkpoint that get_odesign_ckpt.sh now downloads (see ckpt/).
+#
+# Optional (antibody workflow only, Phase G of checklist):
+#   pip install abnumber       # for scripts/identify_cdr.py helper
+# =============================================================================
+
+# === Edited for native Windows install (Claude, 2026-04-28) ===
+# 'triton==2.3.1' and 'pyg-lib' commented out below: no Windows wheels exist
+# and src/ contains no imports of either. Restore if running on Linux.
+
 antlr4-python3-runtime==4.9.3
 hydra-core==1.3.2
 omegaconf==2.3.0
@@ -9,6 +45,7 @@ pysocks==1.7.1
 pyyaml==6.0.2
 send2trash==1.8.3
 absl-py==2.1.0
+addict==2.4.0  # Windows-fork: ADDED — imported by invfold/evaluation_tools/config_utils.py
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.2
 aiosignal==1.4.0
@@ -24,7 +61,7 @@ attrs==25.4.0
 babel==2.17.0
 beautifulsoup4==4.14.2
 biopython==1.83
-biotite==1.0.1
+biotite==1.2.0  # Windows-fork: bumped from 1.0.1 (needs biotite.interface.rdkit)
 biotraj==1.2.2
 bleach==6.2.0
 brotli==1.2.0
@@ -36,6 +73,7 @@ colorama==0.4.6
 colorlog==6.10.1
 comm==0.2.2
 contourpy==1.3.1
+cpdb-protein==1.1.0  # Windows-fork: ADDED — gRNAde data_utils.py needs it (RNA design)
 crcmod==1.7
 cycler==0.12.1
 debugpy==1.8.17
@@ -55,6 +93,7 @@ fonttools==4.56.0
 fqdn==1.5.1
 frozenlist==1.8.0
 fsspec==2024.6.1
+gdown==5.2.0  # Windows-fork: ADDED — used in Phase E to fetch CCD data from Google Drive
 gemmi==0.6.5
 gitdb==4.0.12
 h11==0.16.0
@@ -143,6 +182,7 @@ pillow==11.0.0
 pip==25.0.1
 platformdirs==4.3.6
 prometheus-client==0.23.1
+prody==2.6.1  # Windows-fork: ADDED — imported by invfold/proteinmpnn/data_utils.py
 prompt-toolkit==3.0.50
 propcache==0.4.1
 protenix==0.5.5
@@ -155,9 +195,9 @@ py-cpuinfo==9.0.0
 pycparser==2.22
 pydantic==2.10.6
 pydantic-core==2.27.2
-pyg-lib
+# pyg-lib  # NO Windows wheel; not imported by src/
 pygments==2.19.1
-pyparsing==3.2.1
+pyparsing==3.1.1  # Windows-fork: downgraded from 3.2.1 (prody requires <=3.1.1)
 python-dateutil==2.9.0.post0
 python-json-logger==4.0.0
 pytorch-lightning==1.9.0
@@ -178,7 +218,7 @@ scikit-learn-extra==0.3.0
 scipy==1.15.2
 sentry-sdk==2.22.0
 setproctitle==1.3.5
-setuptools==75.8.2
+setuptools==69.5.1  # Windows-fork: downgraded from 75.8.2 (pkg_resources for PL 1.9.0)
 six==1.17.0
 smmap==5.0.2
 sniffio==1.3.1
@@ -205,7 +245,7 @@ tos==2.8.1
 tqdm==4.67.1
 traitlets==5.14.3
 transformers==4.55.2
-triton==2.3.1
+# triton==2.3.1  # NO Windows wheel; not imported by src/
 typing-extensions==4.12.2
 tzdata==2025.1
 uri-template==1.3.0

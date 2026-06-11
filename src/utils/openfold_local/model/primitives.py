@@ -39,7 +39,15 @@ if deepspeed_is_installed:
     import deepspeed
 
 if ds4s_is_installed:
-    from deepspeed.ops.deepspeed4science import DS4Sci_EvoformerAttention
+    try:
+        from deepspeed.ops.deepspeed4science import DS4Sci_EvoformerAttention
+    except (ImportError, RuntimeError, OSError, Exception) as _e:
+        # Windows: DeepSpeed JIT-compiles EvoformerAttention on first import,
+        # which requires NVIDIA CUTLASS at $CUTLASS_PATH. Not installed natively.
+        # Disable the kernel — _deepspeed_evo_attn() guards on ds4s_is_installed
+        # and OpenFold falls back to standard attention. (Claude, 2026-04-28)
+        ds4s_is_installed = False
+        DS4Sci_EvoformerAttention = None
 
 fa_is_installed = importlib.util.find_spec("flash_attn") is not None
 if fa_is_installed:

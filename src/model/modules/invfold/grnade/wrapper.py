@@ -66,6 +66,18 @@ def _load_grnade_runtime(grnade_root: Path):
         feat_mod = sys.modules[f"{_GRNADE_ALIAS}.data.featurizer"]
         return models_mod.gRNAde, feat_mod.RNAGraphFeaturizer
 
+    # Windows-fork (Claude, 2026-04-28): gRNAde's constants.py reads several
+    # env vars (X3DNA, ETERNAFOLD, PROJECT_PATH, DATA_PATH) and stores them
+    # as None when unset. sec_struct_utils.py then computes function-default
+    # args via os.path.join(<NONE_PATH>, "...") at IMPORT time — which fails
+    # with TypeError. Provide empty-string defaults so the joins produce
+    # nonsensical-but-valid paths; the functions that USE them (X3DNA-based
+    # sec-struct prediction) are only invoked during gRNAde training-time
+    # data prep, not during ODesign inference, so a bad path is harmless.
+    import os
+    for _ev in ("PROJECT_PATH", "DATA_PATH", "X3DNA", "ETERNAFOLD"):
+        os.environ.setdefault(_ev, "")
+
     # create alias package skeleton
     _ensure_package(_GRNADE_ALIAS, src_root)
     _ensure_package(f"{_GRNADE_ALIAS}.data", src_root / "data")

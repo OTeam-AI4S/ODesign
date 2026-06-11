@@ -30,6 +30,9 @@ CKPTS=(
     "https://huggingface.co/The-Institute-for-AI-Molecular-Design/OInvFold/resolve/main/oinvfold_dna.ckpt?download=true"
     "https://huggingface.co/The-Institute-for-AI-Molecular-Design/OInvFold/resolve/main/oinvfold_rna.ckpt?download=true"
     "https://github.com/dauparas/ProteinMPNN/raw/main/vanilla_model_weights/v_48_020.pt"
+    # Windows-fork addition (Claude, 2026-04-28): LigandMPNN checkpoint hardcoded
+    # by src/utils/inference/infer_runner.py:89 but missing from upstream's list.
+    "https://files.ipd.uw.edu/pub/ligandmpnn/ligandmpnn_v_32_010_25.pt"
 
 )
 

@@ -7,15 +7,25 @@
 [![Web Server](https://img.shields.io/badge/Web_Server-Access-9A8CF0?logo=internet-explorer)](https://odesign.lglab.ac.cn/)
 [![Technical Report](https://img.shields.io/badge/Technical_Report-Download-9A8CF0?logo=adobe-acrobat-reader)](https://odesign1.github.io/static/pdfs/technical_report.pdf)
 [![Project Page](https://img.shields.io/badge/Project_Page-Access-9A8CF0?logo=adobe-acrobat-reader)](https://odesign1.github.io/)
-[![WhatsApp](https://img.shields.io/badge/WhatsApp-Join-25D366?logo=whatsapp)](https://chat.whatsapp.com/BfO6E7EGYpwDdjAAreKDVq?mode=wwt)
-[![WeChat](https://img.shields.io/badge/WeChat-Join-07C160?logo=wechat)](https://github.com/The-Institute-for-AI-Molecular-Design/ODesign/blob/main/imgs/odesign_wechat_qr_code.jpg)
+[![Windows Native](https://img.shields.io/badge/Windows-Native-0078D6?logo=windows)](#installation)
+[![Upstream](https://img.shields.io/badge/Forked_from-OTeam--AI4S/ODesign-blue?logo=github)](https://github.com/OTeam-AI4S/ODesign)
 </div>
 
+> # 🪟 Windows-native fork
+>
+> This repository is a **Windows-native fork** of [OTeam-AI4S/ODesign](https://github.com/OTeam-AI4S/ODesign). The upstream targets Linux + Docker; this fork is for Windows users who need to use WDDM shared GPU memory to spill past their dedicated VRAM cap (e.g. running 4 GB+ checkpoints on an 8 GB consumer GPU). Tested end-to-end on **Windows 11 + RTX 4070 (8 GB dedicated + 8 GB shared) + CUDA 12.1**.
+>
+> If you're on Linux or you have a Linux-friendly Docker setup, the upstream repo is a smoother experience. Use this fork if Windows is a hard constraint.
+
+---
+
+- [About this fork](#about-this-fork)
 - [Installation](#installation)
 - [Available Models](#available-models)
 - [Inference](#inference)
   - [Input Format](#input-format)
   - [Run Inference](#run-inference)
+  - [Run All Examples (smoke test)](#run-all-examples-smoke-test)
   - [Output Format](#output-format)
   - [Usage](#usage)
     - [Protein Generation](#protein-generation)
@@ -23,71 +33,143 @@
     - [Nucleic Acid Generation](#nucleic-acid-generation)
     - [Cyclic Peptide Generation](#cyclic-peptide-generation)
     - [Partial Diffusion](#partial-diffusion)
+- [MSA Mode on Windows (Limited)](#msa-mode-on-windows-limited)
 - [Training](#training)
+- [Linux / Docker / Apptainer Users](#linux--docker--apptainer-users)
 - [Cite](#cite)
 - [Acknowledgements](#acknowledgements)
 - [License](#license)
 
-🎉Here we present [ODesign](https://odesign1.github.io/static/pdfs/technical_report.pdf), an all-atom generative world model for all-to-all biomolecular interaction design. ODesign allows scientists to specify epitopes on arbitrary targets and generate diverse classes of binding partners with fine-grained control.
+🎉 [ODesign](https://odesign1.github.io/static/pdfs/technical_report.pdf) is an all-atom generative world model for all-to-all biomolecular interaction design. ODesign allows scientists to specify epitopes on arbitrary targets and generate diverse classes of binding partners with fine-grained control.
 
-ODesign is also available at https://odesign.lglab.ac.cn, allowing users to generate binding partners without coding expertise.
+A no-install hosted version is available at https://odesign.lglab.ac.cn — use that if you only need occasional inference and don't want to manage a local install.
 
-Please feel free to contact us via [email](mailto:odesign@lglab.ac.cn) if you have any questions. You can also join our discussion group on [WhatsApp](https://chat.whatsapp.com/BfO6E7EGYpwDdjAAreKDVq?mode=wwt) or [WeChat](https://github.com/The-Institute-for-AI-Molecular-Design/ODesign/blob/main/imgs/odesign_wechat_qr_code.jpg).
-
-This work is supported by Lingang Laboratory, Zhejiang University, The Chinese University of Hong Kong, and Shanghai Artificial Intelligence Laboratory. For the full list of funding sources, please refer to our technical report [ODesign: A World Model for Biomolecular Interaction Design](https://odesign1.github.io/static/pdfs/technical_report.pdf).
+For questions about the model, contact the upstream authors at [odesign@lglab.ac.cn](mailto:odesign@lglab.ac.cn). For questions about this Windows fork, open an issue here.
 
 <div align="center">
   <img src="imgs/odesign_video.gif" alt="ODesign Video" width="100%">
 </div>
 
 
+# About this fork
+
+What's different from upstream:
+
+| Component | Upstream | This fork | Reason |
+|---|---|---|---|
+| `requirements.txt` — `triton==2.3.1` | required | commented out | no Windows wheel; not imported by `src/` |
+| `requirements.txt` — `pyg-lib` | required | commented out | no Windows wheel; not imported by `src/` |
+| `requirements.txt` — `biotite` | `1.0.1` | `1.2.0` | `inference_utils.py` imports `biotite.interface.rdkit` (added in 1.1+) |
+| `requirements.txt` — `setuptools` | `75.8.2` | `69.5.1` | `pytorch_lightning==1.9.0` needs `pkg_resources.declare_namespace`, removed in setuptools 70+ |
+| `requirements.txt` — `pyparsing` | `3.2.1` | `3.1.1` | `prody` requires `<=3.1.1` |
+| `requirements.txt` — `prody`, `addict` | missing | added | imported by `invfold/` modules but absent from upstream pin list |
+| `ckpt/get_odesign_ckpt.sh` | 9 URLs | 10 URLs | added LigandMPNN checkpoint hardcoded by `infer_runner.py:89` |
+| `inference_demo.sh` `num_workers` | `4` | `0` | Windows uses spawn-based DataLoaders; pickle issues common at >0 |
+| `inference_demo.sh` allocator env | not set | `expandable_segments:True` | reduces fragmentation when spilling into shared GPU memory |
+| `src/utils/openfold_local/utils/kernel/attention_core.py` | hard import | try/except | OpenFold's optional CUDA softmax kernel isn't built natively |
+| `src/utils/openfold_local/model/primitives.py` | hard import | try/except | DeepSpeed `DS4Sci_EvoformerAttention` JIT-compiles on first import; needs CUTLASS, not installed natively |
+| `src/utils/data/msa_utils.py` | hardcoded `/tmp/...` | `tempfile.gettempdir()` | defensive, in case the `precomputed_msa_dir` path isn't taken |
+| `inference_demo.bat` | absent | added | Windows-native runner equivalent to `inference_demo.sh` |
+| `run_all_examples.bat` | absent | added | sanity-check runner across all 11 pre-staged examples |
+
+For full install state, supplemental fixes during first inference, and known-issue triage, see:
+
+- [`ODESIGN_INSTALL_CHECKLIST.md`](ODESIGN_INSTALL_CHECKLIST.md) — phase-by-phase install with checkboxes
+- [`PROGRESS_NOTES.md`](PROGRESS_NOTES.md) — what was patched and why, with verification commands
+
 # Installation
-**Step 1 — Clone the Repository**
-```bash
-git clone https://github.com/The-Institute-for-AI-Molecular-Design/ODesign.git
+
+The full step-by-step is in [`ODESIGN_INSTALL_CHECKLIST.md`](ODESIGN_INSTALL_CHECKLIST.md). The summary below assumes you're starting fresh.
+
+### Step 1 — Windows tooling (one-time)
+
+Install in this order. Run in an **elevated terminal** (Run as Administrator) for CUDA Toolkit and VS Build Tools.
+
+| Tool | Version | Notes |
+|---|---|---|
+| **NVIDIA Driver** | ≥ 550 | Any recent driver supports WDDM shared memory. |
+| **CUDA Toolkit** | **12.1.1** (not 12.2/12.4) | Must match PyTorch's pinned wheel. [Download](https://developer.download.nvidia.com/compute/cuda/12.1.1/local_installers/cuda_12.1.1_531.14_windows.exe) |
+| **Visual Studio 2022 Build Tools** | latest | Pick the *Desktop development with C++* workload. Required for any source-build wheel. |
+| **Miniconda** | any recent | [Miniconda3-py310](https://repo.anaconda.com/miniconda/Miniconda3-py310_latest-Windows-x86_64.exe) |
+| **Git for Windows** | any recent | Provides Git Bash, which runs the project's `.sh` scripts unmodified. |
+
+Verify in a fresh `cmd.exe`:
+
+```cmd
+nvcc --version              :: should show release 12.1
+nvidia-smi                  :: should show your GPU + driver
+conda --version             :: any version
+git --version               :: any version
+```
+
+### Step 2 — Clone
+
+```cmd
+cd /d "C:\path\to\where\you\want\it"
+git clone https://github.com/<your-username>/ODesign.git
 cd ODesign
 ```
-**Step 2 — Prepare the Environment (cuda 12.1)**
 
-- **pip**
+### Quick path: one-shot installer
 
-```bash
-conda create -n odesign python=3.10
+This fork ships `install.bat`, which runs Steps 3–6 below in the right order with the right env vars (notably `DS_BUILD_OPS=0` etc. so DeepSpeed installs in JIT mode on Windows). From the **x64 Native Tools Command Prompt for VS 2022** with the conda base env active:
+
+```cmd
+.\install.bat
+```
+
+The remaining manual step is the CCD data download (Step 6 below); the script prints the exact `gdown` command at the end. If you'd rather do it by hand, follow Steps 3–6 below explicitly.
+
+### Step 3 — Create the conda environment
+
+Open the **"x64 Native Tools Command Prompt for VS 2022"** (Start menu → Visual Studio 2022 folder). Use this shell — it puts MSVC and CUDA on PATH for source-build wheels.
+
+```cmd
+conda create -n odesign python=3.10 -y
 conda activate odesign
+
+pip install torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cu121
+```
+
+Sanity check (must print `2.3.1+cu121 True 12.1`):
+
+```cmd
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.version.cuda)"
+```
+
+### Step 4 — Install the rest of the requirements
+
+```cmd
 pip install -r requirements.txt -f https://data.pyg.org/whl/torch-2.3.1+cu121.html
+pip install gdown
 ```
 
-- **Docker**
+If `deepspeed==0.17.4` fails to install, fall back to `0.15.4` or `0.14.0` — any version that *imports* on Windows is enough since the JIT-compiled ops are guarded by try/except in this fork.
+
+If `torch_scatter`/`torch_sparse`/`torch_cluster`/`torch_spline_conv` fall back to source build, that's expected; the x64 Native Tools shell has the right env. Slow (~5-10 min each) but reliable.
+
+### Step 5 — Download checkpoints
+
+From **Git Bash**:
 
 ```bash
-docker build -t odesign -f Dockerfile .
-
-docker run --gpus all -it --rm --shm-size=8g \
-  -v /path/to/ckpt_root_dir:/app/ODesign/ckpt \
-  -v /path/to/data_root_dir:/app/ODesign/data \
-  -v $(pwd)/outputs:/app/ODesign/outputs \
-  -v $(pwd)/inference_demo.sh:/app/ODesign/inference_demo.sh \
-  -v $(pwd)/train_demo.sh:/app/ODesign/train_demo.sh \
-  odesign bash
+bash ./ckpt/get_odesign_ckpt.sh
 ```
 
-- **Apptainer**
+This pulls all 10 required checkpoints (~17 GB total, including the LigandMPNN checkpoint added in this fork). Re-run is idempotent.
 
-```bash
-apptainer build odesign.sif odesign.def
+### Step 6 — Download CCD data
 
-apptainer run --nv \
-  --writable-tmpfs \
-  -B ckpt:/app/ODesign/ckpt \
-  -B data:/app/ODesign/data \
-  -B outputs:/app/ODesign/outputs \
-  -B $(pwd)/inference_demo.sh:/app/ODesign/inference_demo.sh \
-  -B $(pwd)/train_demo.sh:/app/ODesign/train_demo.sh \
-  odesign.sif bash
+```cmd
+mkdir data
+gdown --folder https://drive.google.com/drive/folders/1wPmwIrC3G52q1JFY0RXY95tjKDl7YEln -O data
 ```
+
+You need `components.v20240608.cif` and `components.v20240608.cif.rdkit_mol.pkl` to land in `data\`. The other file in that Drive folder (`odesign_full_data.tar.gz`, ~850 GB unzipped) is the **training** dataset and is NOT needed for inference.
 
 # Available Models
-ODesign currently provides the following pre-trained model variants. Each model supports a specific modality and design mode:
+
+ODesign provides four pre-trained model variants. Each model supports a specific modality and design mode:
 
 | Model Name                  | Design Modality | Design Mode          | Hugging Face                                                                         |
 | --------------------------- | ----------------- | ---------------------- | ------------------------------------------------------------------------------------ |
@@ -100,60 +182,59 @@ ODesign currently provides the following pre-trained model variants. Each model 
   <img src="imgs/odesign_design_mode.jpg" alt="ODesign Design Mode" width="85%">
 </div>
 
-Checkpoints of OInvFold module for different design modalities are also stored at [Hugging Face](https://huggingface.co/The-Institute-for-AI-Molecular-Design/OInvFold/tree/main).
-
-You can download all available checkpoints using the following command. Alternatively, you may manually download specific checkpoints from the Hugging Face links listed above.
-
-```bash
-cd ODesign
-bash ./ckpt/get_odesign_ckpt.sh [ckpt_root_dir]
-```
-
+OInvFold checkpoints for different modalities are at [Hugging Face](https://huggingface.co/The-Institute-for-AI-Molecular-Design/OInvFold/tree/main).
 
 # Inference
 
 ## Input Format
-Please refer to **Section B.1 & B.2** in our [Supplementary Information](https://odesign1.github.io/static/pdfs/technical_report.pdf) for details about the input JSON format. Example input JSON files for each task can be found in the [examples](https://github.com/The-Institute-for-AI-Molecular-Design/ODesign/tree/main/examples) directory.
 
-Please note that `ligand` chain can also be specified by SMILES string in the `smiles` field. In this case, you don't need to provide the path to `ref_file`. An example input JSON file is provided [here](https://github.com/The-Institute-for-AI-Molecular-Design/ODesign/tree/main/examples/protein_design/lig_binding_prot_smiles/odesign_input.json). To enable this function, please update the running environment using the following command:
+See **Section B.1 & B.2** of the [Supplementary Information](https://odesign1.github.io/static/pdfs/technical_report.pdf) for details. Example input JSONs for each task are in the [`examples`](examples/) directory.
 
-```bash
-conda install -c conda-forge biotite=1.2.0
-```
+A `ligand` chain can be specified by SMILES via the `smiles` field instead of a `ref_file`. See [`examples/protein_design/lig_binding_prot_smiles/odesign_input.json`](examples/protein_design/lig_binding_prot_smiles/odesign_input.json). This works out of the box on this fork (biotite 1.2.0 is in `requirements.txt`).
 
 ## Run Inference
-**Step 1 — Download Required Inference Data**
 
-Before running inference for the first time, please download the `components.v20240608.cif` and `components.v20240608.cif.rdkit_mol.pkl` from [Google Drive](https://drive.google.com/drive/folders/1wPmwIrC3G52q1JFY0RXY95tjKDl7YEln?usp=drive_link), and place these files under your specified `data_root_dir`.
+After Steps 1–6 of [Installation](#installation), launch inference with the Windows runner:
 
-
-
-**Step 2 — Run the Inference Demo**
-
-After data preparation, launch the inference process using:
-
-```bash
-bash inference_demo.sh
+```cmd
+.\inference_demo.bat
 ```
 
-This script generates molecular designs based on the selected model and input json file. You can configure inference behavior by editing the following arguments in `inference_demo.sh`. An example for multi-GPU inference using `torchrun` is also provided in `inference_demo.sh`.
+(or, equivalently from Git Bash: `bash inference_demo.sh`)
+
+Edit the `SET` lines at the top of `inference_demo.bat` to control the run:
 
 | Argument              | Description                                                                                                                                             | Example                             |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| `infer_model_name`     | Model used for inference. Available options: `odesign_base_prot_flex`, `odesign_base_prot_rigid`, `odesign_base_ligand_rigid`, `odesign_base_na_rigid`. | `odesign_base_prot_flex`            |
-| `design_modality`        | Must be specified as `dna` or `rna` if using nucleic acid design model. Available options: `protein`, `ligand`, `dna`, `rna`                                                                                                            | `rna`                            |
-| `data_root_dir`        | Directory where downloaded data is stored.                                                                                                            | `./data`                            |
-| `ckpt_root_dir`        | Directory where model checkpoints are stored.                                                                                                           | `./ckpt`                            |
-| `input_json_path`      | Path to the input design specification JSON file.                                                                                                       | `./examples/.../odesign_input.json` |
-| `exp_name`                  | Custom label for inference output directory. If left empty, a default name is auto-generated.                                                           | `protein_binding_protein_design`    |
-| `seeds`                | Random seeds used during generation. Supports multiple seeds.                                                                              | `[42]` or `[42, 123]`               |
-| `N_sample`             | Number of generated samples per seed.                                                                                                            | `5`                                 |
-| `use_msa`              | Utilize MSA information during inference (only set to `true` if the input JSON includes MSA).                                                                           | `false`                             |
-| `num_workers`          | Number of dataloader workers.                                                                                                                           | `4`                                 |
-| `CUDA_VISIBLE_DEVICES` | GPU device for inference.                                                                                                                                | `0`                                 |
+| `infer_model_name`     | Model. Options: `odesign_base_prot_flex`, `odesign_base_prot_rigid`, `odesign_base_ligand_rigid`, `odesign_base_na_rigid`. | `odesign_base_prot_flex`            |
+| `design_modality`        | Required for nucleic-acid models. Options: `protein`, `ligand`, `dna`, `rna`. | `rna` |
+| `data_root_dir`        | Where the CCD data lives. | `./data` |
+| `ckpt_root_dir`        | Where the checkpoints live. | `./ckpt` |
+| `input_json_path`      | Path to the input design JSON. | `./examples/.../odesign_input.json` |
+| `exp_name`             | Custom label for the output folder. Auto-generated if empty. | `protein_binding_protein_design` |
+| `seeds`                | Random seeds. Multiple supported. | `[42]` or `[42, 123]` |
+| `N_sample`             | Samples per seed. **Start at `1` for first run on 8 GB GPUs.** | `5` |
+| `use_msa`              | Use MSA. Only `true` if input JSON has `msa.precomputed_msa_dir` (see [MSA Mode](#msa-mode-on-windows-limited)). | `false` |
+| `num_workers`          | DataLoader workers. **Keep at 0 on Windows for first run.** | `0` |
+| `CUDA_VISIBLE_DEVICES` | GPU index. | `0` |
+
+> ⚠️ **PowerShell users:** `inference_demo.bat` won't run as a bare command. Use `.\inference_demo.bat`. Or switch to `cmd.exe`.
+>
+> ⚠️ **Single-GPU only.** NCCL (PyTorch's distributed backend used when `world_size > 1`) is Linux-only. The commented-out `torchrun` multi-GPU block at the bottom of `inference_demo.sh` will not work on Windows — leave it commented. The single-GPU path is the only one this fork supports.
+
+## Run All Examples (smoke test)
+
+This fork ships `run_all_examples.bat`, which walks all 11 pre-staged examples with `N_sample=1`, dumps each to its own output folder under `outputs\test_*\`, and prints a pass/fail summary at the end. Useful as an end-to-end stack check after a fresh install.
+
+```cmd
+.\run_all_examples.bat
+```
+
+Wall-clock ~30 minutes total (~2-3 min per example) on an RTX 4070.
 
 ## Output Format
-When inference completes, results will be saved in the `outputs/` directory which has the following structure:
+
+When inference completes, results are saved under `outputs\<exp_name>\<timestamp>\`:
 
 ```
 outputs
@@ -165,33 +246,30 @@ outputs
         │   ├── seed_XXX
         │   │   ├── predictions
         │   │   │   ├── <sample_name_1>_seed_XXX_bb_0_seq_0.cif
-        │   │   │   ├── <sample_name_1>_seed_XXX_bb_0_seq_1.cif        
+        │   │   │   ├── <sample_name_1>_seed_XXX_bb_0_seq_1.cif
         │   │   │   └── ...
         │   │   └── traceback.pkl
         │   ├── seed_YYY
-        │   │   ├── predictions
-        │   │   │   ├── <sample_name_1>_seed_YYY_bb_0_seq_0.cif
-        │   │   │   └── ...
-        │   │   └── traceback.pkl
+        │   │   └── ...
         ├── <sample_name_2>
-        │   ├── ...
+        │   └── ...
         └── run.log
 ```
 
 | Folder / File   | Description                                                                                                                   |
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `<exp_name>/`    | Folder corresponding to the user-defined `exp_name` in `inference_demo.sh`.                                |
-| `<timestamp>/`   | Automatically generated run folder to separate multiple runs.                    |
-| `.hydra/`        | Stores Hydra-generated configuration files.                        |
-| `errors/`        | Stores error logs if failures occur during inference (empty if the run completes successfully). |
-| `<sample_name>/` | Named after the sample `name` field in the input JSON. A JSON may define multiple sample cases.                |
-| `seed_<value>/`   | Contains outputs generated using a specific random seed.            |
-| `predictions/`   | Contains inverse-folded molecular design results.                                                                     |
-| `*.cif`         | The designed molecules after inverse folding in CIF format.                   |
-| `traceback.pkl` | Serialized traceback information (the constructed input `atom_array`).           |
-| `run.log`       | Full inference execution log.            |
+| `<exp_name>/`    | Folder corresponding to your `exp_name`.                                |
+| `<timestamp>/`   | Auto-generated run folder. |
+| `.hydra/`        | Hydra config snapshot — useful for reproducibility. |
+| `errors/`        | Error logs (empty on a clean run). |
+| `<sample_name>/` | Named after the `name` field in the input JSON. |
+| `seed_<value>/`   | Outputs for a specific random seed. |
+| `predictions/`   | Inverse-folded molecular designs. |
+| `*.cif`         | Designed molecules in CIF format. Open in PyMOL / ChimeraX / [Mol\* viewer](https://molstar.org/viewer/). |
+| `traceback.pkl` | Serialized atom-array traceback. |
+| `run.log`       | Full inference log. |
 
-> Please note that the number of designed sequences per backbone structure (default: 1) can be specified by the argument `exp.invfold_topk`.
+The naming pattern is `<name>_seed_<S>_bb_<B>_seq_<Q>.cif` — backbone B, sequence Q. Sequences per backbone defaults to 1; override via `exp.invfold_topk`.
 
 ## Usage
 
@@ -201,49 +279,51 @@ outputs
 
 <img src="imgs/protein/protein_binding_protein.png" alt="Protein-binding Protein" width="400px" align="right"/>
 
-ODesign can generate proteins that bind to specific protein targets. You need to provide a reference structure containing the target protein and specify the hotspot residues that define the binding interface. The model will generate a new protein chain that interacts with the target at the specified hotspot.
+ODesign generates proteins that bind specific protein targets. Provide a reference structure of the target and specify hotspot residues that define the binding interface. The model generates a new protein chain that interacts at the specified hotspot.
 
-To run this example, use:
-```bash
-bash inference_demo.sh
+Edit `inference_demo.bat`:
 ```
-with `infer_model_name=odesign_base_prot_flex` and `input_json_path=./examples/protein_design/prot_binding_prot/odesign_input.json`.
+SET infer_model_name=odesign_base_prot_flex
+SET input_json_path=./examples/protein_design/prot_binding_prot/odesign_input.json
+```
+Then `.\inference_demo.bat`.
 
 #### Ligand-binding Protein
 
 <img src="imgs/protein/ligand_binding_protein.png" alt="Ligand-binding Protein" width="400px" align="right"/>
 
-ODesign can generate proteins that bind to specific small molecule ligands. You need to provide a reference structure containing the ligand and specify the hotspot atoms on the ligand. The model will generate a new protein chain that forms interactions with the ligand at the specified hotspot.
+Generates proteins that bind small-molecule ligands. Provide a reference with the ligand; specify hotspot atoms.
 
-To run this example, use:
-```bash
-bash inference_demo.sh
+Edit:
 ```
-with `infer_model_name=odesign_base_prot_flex` and `input_json_path=./examples/protein_design/lig_binding_prot/odesign_input.json`.
+SET infer_model_name=odesign_base_prot_flex
+SET input_json_path=./examples/protein_design/lig_binding_prot/odesign_input.json
+```
 
 #### Atom Scaffold
 
 <img src="imgs/protein/tip_atom.png" alt="Atom Scaffold" width="150" align="right"/>
 
-ODesign can scaffold proteins around specific atoms or functional groups. This is useful for designing proteins that interact with specific chemical moieties. You need to specify the condition atoms that define the scaffold constraints, and the model will generate a protein structure that positions these atoms correctly.
+Scaffold proteins around specific atoms or functional groups. Useful for designing proteins around specific chemical moieties.
 
-To run this example, use:
-```bash
-bash inference_demo.sh
+Edit:
 ```
-with `infer_model_name=odesign_base_prot_flex` and `input_json_path=./examples/protein_design/atom_scaffold/odesign_input.json`.
+SET infer_model_name=odesign_base_prot_flex
+SET input_json_path=./examples/protein_design/atom_scaffold/odesign_input.json
+```
 
 #### Motif Scaffold
 <p align="center">
 <img src="imgs/protein/motif_scaffolding.png" alt="Motif Scaffold" width="400px" align="middle"/>
 </p>
-ODesign can scaffold functional protein motifs by generating surrounding protein structure. This is useful for stabilizing functional motifs or creating new protein folds around known functional elements. You need to specify the motif regions from the reference structure and the desired scaffold length.
 
-To run this example, use:
-```bash
-bash inference_demo.sh
+Scaffold functional motifs by generating surrounding protein structure. Useful for stabilizing motifs or building new folds around known functional elements.
+
+Edit:
 ```
-with `infer_model_name=odesign_base_prot_flex` and `input_json_path=./examples/protein_design/motif_scaffold/odesign_input.json`.
+SET infer_model_name=odesign_base_prot_flex
+SET input_json_path=./examples/protein_design/motif_scaffold/odesign_input.json
+```
 
 ### Ligand Generation
 
@@ -251,13 +331,14 @@ with `infer_model_name=odesign_base_prot_flex` and `input_json_path=./examples/p
 
 <img src="imgs/ligand/protein_binding_ligand.png" alt="Protein-binding Ligand" width="150" align="right"/>
 
-ODesign can generate small molecule ligands that bind to specific protein targets. You need to provide a reference structure containing the target protein and specify the hotspot residues that define the binding pocket. The model will generate a new ligand molecule that interacts with the target at the specified hotspot.
+Generates small-molecule ligands that bind specific protein targets. Provide a reference with the protein; specify hotspot residues.
 
-To run this example, use:
-```bash
-bash inference_demo.sh
+Edit:
 ```
-with `infer_model_name=odesign_base_ligand_rigid` and `input_json_path=./examples/ligand_design/prot_binding_lig/odesign_input.json`.
+SET infer_model_name=odesign_base_ligand_rigid
+SET design_modality=ligand
+SET input_json_path=./examples/ligand_design/prot_binding_lig/odesign_input.json
+```
 
 ### Nucleic Acid Generation
 
@@ -265,91 +346,121 @@ with `infer_model_name=odesign_base_ligand_rigid` and `input_json_path=./example
 <p align="center">
 <img src="imgs/na/rna_backbone.png" alt="RNA Backbone" width="300px" align="middle"/>
 </p>
-ODesign can generate nucleic acid backbone structures of specified length. This is useful for designing NA molecules from scratch without requiring a reference structure. You only need to specify the desired RNA chain length. Note: This example demonstrates RNA generation. To generate DNA instead, modify the `chain_type` field in the JSON input file to `"dnaChain"` and set `design_modality=dna`.
 
-To run this example, use:
-```bash
-bash inference_demo.sh
+Generate nucleic-acid backbones of specified length. To switch to DNA, change `chain_type` in the JSON to `"dnaChain"` and set `design_modality=dna`.
+
+Edit:
 ```
-with `infer_model_name=odesign_base_na_rigid`, `design_modality=rna`, and `input_json_path=./examples/na_design/rna_bb/odesign_input.json`.
+SET infer_model_name=odesign_base_na_rigid
+SET design_modality=rna
+SET input_json_path=./examples/na_design/rna_bb/odesign_input.json
+```
 
 #### Protein-binding Nucleic Acid
 <p align="center">
 <img src="imgs/na/protein_binding_rna.png" alt="Protein-binding RNA" width="400px" align="middle"/>
 </p>
-ODesign can generate nucleic acid molecules that bind to specific protein targets. You need to provide a reference structure containing the target protein and specify the hotspot residues that define the binding interface. The model will generate a new NA chain that interacts with the target at the specified hotspot. Note: This example demonstrates RNA generation. To generate DNA instead, modify the `chain_type` field in the JSON input file (e.g., change `"rnaChain"` to `"dnaChain"`) and set `design_modality=dna`.
 
-To run this example, use:
-```bash
-bash inference_demo.sh
+Generate NA molecules that bind protein targets. Provide a reference with the protein; specify hotspot residues. To switch to DNA, change `chain_type` in the JSON and set `design_modality=dna`.
+
+Edit:
 ```
-with `infer_model_name=odesign_base_na_rigid`, `design_modality=rna`, and `input_json_path=./examples/na_design/prot_binding_rna/odesign_input.json`.
+SET infer_model_name=odesign_base_na_rigid
+SET design_modality=rna
+SET input_json_path=./examples/na_design/prot_binding_rna/odesign_input.json
+```
 
 ### Cyclic Peptide Generation
+
 #### Protein-binding Cyclic Peptide
-ODesign can generate cyclic peptides that bind to specific protein targets. You need to provide a reference structure containing the target protein and specify the hotspot residues that define the binding interface. The model will generate a new cyclic peptide chain that interacts with the target at the specified hotspot.
 
-To run this example, use:
-```bash
-bash inference_demo.sh
+Generate cyclic peptides that bind protein targets. Provide a reference with the target; specify hotspot residues.
+
+Edit:
 ```
-with `infer_model_name=odesign_base_prot_flex` and `input_json_path=./examples/cyclic_peptide_design/odesign_input.json`.
-
+SET infer_model_name=odesign_base_prot_flex
+SET input_json_path=./examples/cyclic_peptide_design/odesign_input.json
+```
 
 ### Partial Diffusion
-ODesign can partially modify existing binding molecules to potentially enhance stability, modulate specificity, or improve expressibility. You need to provide a reference structure containing the target molecule, and specify the `partial_diff` field in the input JSON file to indicate the regions that require modifications. Please refer to **Section B.3 Partial Diffusion** in our [Supplementary Information](https://odesign1.github.io/static/pdfs/technical_report.pdf) for details.
 
-To run this example, use:
-```bash
-bash inference_demo.sh
+ODesign can partially modify existing binding molecules to enhance stability, modulate specificity, or improve expressibility. Provide a reference with the target molecule and specify the `partial_diff` field in the input JSON to indicate regions to modify. See **Section B.3 Partial Diffusion** of the [Supplementary Information](https://odesign1.github.io/static/pdfs/technical_report.pdf).
+
+Edit:
 ```
-with `infer_model_name=odesign_base_prot_rigid`, `input_json_path=./examples/protein_design/prot_binding_prot_partial_diff/odesign_input.json` and `enable_partial_diff=true`.
+SET infer_model_name=odesign_base_prot_rigid
+SET input_json_path=./examples/protein_design/prot_binding_prot_partial_diff/odesign_input.json
+SET enable_partial_diff=true
+```
 
+# MSA Mode on Windows (Limited)
+
+Setting `use_msa=true` triggers ODesign's MSA pipeline, which on Linux calls `jackhmmer` (HMMER), `reformat.pl` (HHsuite), and `subprocess.check_call(..., executable="/bin/bash")`. None of those exist on native Windows. Trying to port them is a multi-day rabbit hole.
+
+**The supported workflow on Windows: pre-compute MSAs externally and inject via `precomputed_msa_dir`.** ODesign's `msa_featurizer.py` checks for `msa.precomputed_msa_dir` in the input JSON *before* invoking the broken pipeline; if present, the entire jackhmmer/HHsuite path is skipped and the model just reads two `.a3m` files.
+
+**Required files** in `<msa_dir>/`:
+- `non_pairing.a3m` (always required)
+- `pairing.a3m` (only required when the chain is *not* a homomer/monomer)
+
+**Three options for producing the `.a3m` files**, ranked by ease:
+
+1. **ColabFold MMseqs2 web API** (easiest — free, web-based). Upload sequence, get back a `.a3m`, rename to ODesign's expected names.
+2. **Native MMseqs2 on Windows** (binaries available; needs a local UniRef30 / ColabFold-Env DB).
+3. **Run jackhmmer once under WSL** and copy the output back.
+
+Then add to your input JSON:
+
+```json
+{
+  "chain_type": "proteinChain",
+  "sequence": "MVKVGVNG...",
+  "msa": {
+    "precomputed_msa_dir": "./data/msa/chain1",
+    "pairing_db": "uniprot"
+  }
+}
+```
+
+Set `use_msa=true` in `inference_demo.bat`.
+
+For full Phase I instructions including a sample ColabFold API client script, see [`ODESIGN_INSTALL_CHECKLIST.md`](ODESIGN_INSTALL_CHECKLIST.md#phase-i--flipping-msa-on-the-proper-fix).
 
 # Training
-**Step 1 — Download Required Training Data**
 
-Before training ODesign, please download the `odesign_full_data.tar.gz` from [Google Drive](https://drive.google.com/drive/folders/1wPmwIrC3G52q1JFY0RXY95tjKDl7YEln?usp=drive_link), and unzip the file using the following command. About 850 GB of disk space is required to keep the unzipped files.
+Training requires the upstream ~850 GB training dataset (`odesign_full_data.tar.gz` from [Google Drive](https://drive.google.com/drive/folders/1wPmwIrC3G52q1JFY0RXY95tjKDl7YEln)) and is best done on Linux at the moment. **Native-Windows training is not validated by this fork** — at minimum you'll need:
 
-```bash
-tar -xzvf [data_root_dir]/odesign_train_data.tar.gz -C [data_root_dir]
-```
+- WDDM-compatible spilling won't work for a typical training crop (640 tokens) on a consumer GPU; expect to need an A100/H100-class accelerator.
+- Pre-computed MSAs for the entire training corpus, since the on-the-fly MSA search is broken on Windows (see [MSA Mode](#msa-mode-on-windows-limited)).
 
-**Step 2 — Run the Training Demo**
+If you have those constraints solved, `train_demo.sh` works under Git Bash. Set `ckpt_root_dir` to a folder containing the pre-trained folding model checkpoint ([protenix_base_default_v0.5.0.pt](https://af3-dev.tos-cn-beijing.volces.com/release_model/protenix_base_default_v0.5.0.pt)) for ODesign initialization.
 
-After data preparation, launch the training process using:
+# Linux / Docker / Apptainer Users
 
-```bash
-bash train_demo.sh
-```
-
-Please note that the `ckpt_root_dir` in `train_demo.sh` should contain the pre-trained folding model checkpoint for ODesign initialization if you are not training from scratch. Our default training setting employs [protenix_base_default_v0.5.0](https://af3-dev.tos-cn-beijing.volces.com/release_model/protenix_base_default_v0.5.0.pt).
+**Use the [upstream repository](https://github.com/OTeam-AI4S/ODesign) instead.** This fork's patches make sense only for Windows-native installs and aren't tested against the upstream Linux/Docker/Apptainer paths. The `Dockerfile` and `odesign.def` left in this repo are the upstream files preserved for parity but should not be used here — clone upstream for a supported Linux experience.
 
 # Cite
 
-If you use ODesign in your work, please cite the following:
+If you use ODesign in your work, please cite the upstream technical report:
 
 ```
 @misc{zhang2025odesign,
-      title={ODesign: A World Model for Biomolecular Interaction Design}, 
+      title={ODesign: A World Model for Biomolecular Interaction Design},
       author={Odin Zhang and Xujun Zhang and Haitao Lin and Cheng Tan and Qinghan Wang and Yuanle Mo and Qiantai Feng and Gang Du and Yuntao Yu and Zichang Jin and Ziyi You and Peicong Lin and Yijie Zhang and Yuyang Tao and Shicheng Chen and Jack Xiaoyu Chen and Chenqing Hua and Weibo Zhao and Runze Ma and Yunpeng Xia and Kejun Ying and Jun Li and Yundian Zeng and Lijun Lang and Peichen Pan and Hanqun Cao and Zihao Song and Bo Qiang and Jiaqi Wang and Pengfei Ji and Lei Bai and Jian Zhang and Chang-yu Hsieh and Pheng Ann Heng and Siqi Sun and Tingjun Hou and Shuangjia Zheng},
       year={2025},
       eprint={2510.22304},
       archivePrefix={arXiv},
       primaryClass={q-bio.BM},
-      url={https://arxiv.org/abs/2510.22304}, 
+      url={https://arxiv.org/abs/2510.22304},
 }
 ```
 
-
 # Acknowledgements
-This project code draws in part upon [Protenix](https://github.com/bytedance/Protenix) and [OpenFold](https://github.com/aqlaboratory/openfold), and is supported under the Apache 2.0 License. Thanks for their great work and code.
 
-This project is supported by Lingang Laboratory, Zhejiang University, and The Chinese University of Hong Kong. We are actively seeking highly motivated and talented PhD students to join our team. **We offer PhD training opportunities in Pharmacy / AI at Zhejiang University, or Computer Science at The Chinese University of Hong Kong.** 
+The original ODesign project is by Lingang Laboratory, Zhejiang University, The Chinese University of Hong Kong, and Shanghai Artificial Intelligence Laboratory. ODesign builds upon [Protenix](https://github.com/bytedance/Protenix) and [OpenFold](https://github.com/aqlaboratory/openfold). All credit for the model, the architecture, and the training corpus belongs to the upstream authors.
 
-If you are interested, please contact **odinz@link.cuhk.edu.hk**
-
+This Windows fork is unaffiliated with the upstream authors. It exists only to make the model runnable natively on Windows for users with consumer GPUs that benefit from WDDM shared memory. No model weights are modified.
 
 # License
-Both source code and model parameters of ODesign are released under the [Apache 2.0 License](https://github.com/The-Institute-for-AI-Molecular-Design/ODesign/blob/main/LICENSE). 
 
+Both source code and model parameters are released under the [Apache 2.0 License](LICENSE), inherited from upstream. The Windows-fork patches are released under the same license.

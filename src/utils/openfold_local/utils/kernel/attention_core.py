@@ -17,7 +17,14 @@ from operator import mul
 
 import torch
 
-attn_core_inplace_cuda = importlib.import_module("attn_core_inplace_cuda")
+try:
+    attn_core_inplace_cuda = importlib.import_module("attn_core_inplace_cuda")
+except ImportError:
+    # Windows-friendly: this kernel is built only inside the project Docker image.
+    # ODesign's src/ does not import AttentionCoreFunction anywhere, so this fallback
+    # is safe; if a future import path adds a caller, it will fail at call-time with
+    # AttributeError instead of breaking module import. (Claude, 2026-04-28)
+    attn_core_inplace_cuda = None
 
 
 SUPPORTED_DTYPES = [torch.float32, torch.bfloat16]

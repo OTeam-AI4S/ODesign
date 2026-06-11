@@ -45,9 +45,11 @@ N_sample=5
 use_msa=false
 
 # 10. Number of dataloader workers (default: 4)
-num_workers=4
+num_workers=0  # Windows: spawn-based DataLoader; bump to 2 only after green run (Claude, 2026-04-28)
 
 # 11. CUDA Device Setup (default: 0)
+# Windows shared-GPU-memory friendly allocator (Claude, 2026-04-28):
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export CUDA_VISIBLE_DEVICES=0
 
 #######################################################################

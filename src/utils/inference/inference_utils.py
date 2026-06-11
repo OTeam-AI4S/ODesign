@@ -1,4 +1,5 @@
 import random
+import re  # Windows-fork: needed by build_from_chain_sequence regex (Claude, 2026-04-28)
 from copy import deepcopy
 import numpy as np
 import logging
@@ -147,8 +148,17 @@ def build_from_chain_sequence(
     for segment in segments:
         if '/' in segment: # is condition
             ref_c_id, ref_r_range = segment.split('/')
-            s, e = ref_r_range.split('-')
-            s, e = int(s), int(e)
+            # Windows-fork: regex to handle negative residue numbers (e.g. "F/-2-4")
+            # Upstream's `s, e = ref_r_range.split('-')` crashes on negative-numbered
+            # residues (legitimate in PDB for insertion codes / propeptides).
+            # (Claude, 2026-04-28)
+            m = re.match(r'^(-?\d+)-(-?\d+)$', ref_r_range)
+            if m is None:
+                raise ValueError(
+                    f"Cannot parse residue range '{ref_r_range}' "
+                    f"(expected format '<start>-<end>')"
+                )
+            s, e = int(m.group(1)), int(m.group(2))
             chain_atom_array += ref_atom_array[
                 (ref_atom_array.chain_id == ref_c_id) &
                 np.isin(ref_atom_array.res_id, range(s, e+1))

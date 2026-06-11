@@ -18,6 +18,7 @@ import shutil
 import string
 import subprocess
 import time
+import tempfile  # Windows-friendly tmp dir (Claude, 2026-04-28)
 import uuid
 from collections import OrderedDict, defaultdict
 from os.path import exists as opexists
@@ -1348,7 +1349,7 @@ def search_msa(sequence: str, db_fpath: str, res_fpath: str = ""):
         n_cpu=2,
     )
     if res_fpath == "":
-        tmp_dir = f"/tmp/{uuid.uuid4().hex}"
+        tmp_dir = os.path.join(tempfile.gettempdir(), uuid.uuid4().hex)  # was: f"/tmp/{uuid.uuid4().hex}" — Windows fix
         res_fpath = os.path.join(tmp_dir, f"{seq_name}.a3m")
     else:
         tmp_dir = os.path.dirname(res_fpath)
@@ -1383,7 +1384,7 @@ def search_msa(sequence: str, db_fpath: str, res_fpath: str = ""):
 def search_msa_paired(
     sequence: str, pairing_db_fpath: str, non_pairing_db_fpath: str, idx: int = -1
 ) -> tuple[Union[str, None], int]:
-    tmp_dir = f"/tmp/{uuid.uuid4().hex}_{str(time.time()).replace('.', '_')}_{DIST_WRAPPER.rank}_{idx}"
+    tmp_dir = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4().hex}_{str(time.time()).replace('.', '_')}_{DIST_WRAPPER.rank}_{idx}")  # Windows fix
     os.makedirs(tmp_dir, exist_ok=True)
     pairing_file = os.path.join(tmp_dir, "pairing.a3m")
     search_msa(sequence, pairing_db_fpath, pairing_file)

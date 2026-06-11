@@ -1,0 +1,83 @@
+ODesign — Windows Native Fork
+==============================
+
+This repository is a Windows-native fork of OTeam-AI4S/ODesign
+(https://github.com/OTeam-AI4S/ODesign), licensed under Apache 2.0.
+
+The following third-party components are vendored or referenced in this fork.
+All retain their original licenses; this NOTICE is a record of the inclusions
+required by their respective licenses and good practice.
+
+
+1. ODesign (upstream)
+---------------------
+Copyright (c) 2025 The Institute for AI Molecular Design and contributors.
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+Cite: Zhang et al., "ODesign: A World Model for Biomolecular Interaction
+Design," arXiv:2510.22304, 2025.
+
+
+2. gRNAde data utilities
+------------------------
+The files under `src/model/modules/invfold/grnade/src/data/` are vendored
+verbatim from chaitjo/geometric-rna-design (https://github.com/chaitjo/geometric-rna-design)
+with imports rewritten from `from src.` to `from _grnade_src.` to integrate
+with ODesign's dynamic loader.
+
+Copyright (c) 2025 Chaitanya K. Joshi.
+Licensed under the MIT License.
+
+Cite: Joshi et al., "gRNAde: Geometric Deep Learning for 3D RNA Inverse
+Design," ICLR 2025.
+
+
+3. Protenix (transitive dependency)
+-----------------------------------
+ODesign builds on Protenix (https://github.com/bytedance/Protenix), Apache 2.0.
+
+
+4. OpenFold (transitive dependency)
+-----------------------------------
+ODesign incorporates code from OpenFold
+(https://github.com/aqlaboratory/openfold), licensed under Apache 2.0.
+The vendored OpenFold pieces live under `src/utils/openfold_local/`.
+
+
+5. ProteinMPNN (checkpoint + code)
+----------------------------------
+The protein invfold module uses weights from
+https://github.com/dauparas/ProteinMPNN (MIT License).
+
+
+6. LigandMPNN (checkpoint)
+--------------------------
+The `ligandmpnn_v_32_010_25.pt` checkpoint is from
+https://files.ipd.uw.edu/pub/ligandmpnn/, by the Institute for Protein
+Design, University of Washington (MIT License).
+
+
+External tools NOT bundled
+==========================
+
+This fork does not bundle and does not require the following external tools.
+They are referenced by gRNAde's secondary-structure code path; the fork
+gracefully no-ops these calls when the tools aren't installed (Patch 11):
+
+- X3DNA (https://x3dna.org/) — proprietary, academic-only, Linux/macOS only.
+- EternaFold (https://eternagame.org/about/software) — academic license.
+
+If you have either tool installed and want to use it, set the corresponding
+env var (`X3DNA`, `ETERNAFOLD`) before launching ODesign and the original
+codepaths will be exercised.
+
+
+Windows-fork patches
+====================
+
+This fork additionally includes 11 source patches authored by Claude
+(Anthropic) on 2026-04-28 to make ODesign run natively on Windows. See
+PROGRESS_NOTES.md for the full list and rationale.
+
+The patches themselves are released under the Apache License 2.0, matching
+the upstream license.

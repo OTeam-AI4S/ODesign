@@ -118,7 +118,7 @@ venv.bak/
 *.ckpt
 
 bash
-data
+# data
 data_set
 results/
 results_own/
